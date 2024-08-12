@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022 The Android Open Source Project
+ * Copyright (C) 2024 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,15 +31,10 @@
 // with such a backward incompatible change, it has a high risk of breaking
 // later when a module using the interface is updated, e.g., Mainline modules.
 
-package android.hardware.audio.effect;
+package android.hardware.vibrator;
 @VintfStability
-parcelable Processing {
-  android.hardware.audio.effect.Processing.Type type;
-  android.hardware.audio.effect.Descriptor[] ids;
-  @VintfStability
-  union Type {
-    android.media.audio.common.AudioStreamType streamType = android.media.audio.common.AudioStreamType.INVALID;
-    android.media.audio.common.AudioSource source;
-    android.media.audio.common.AudioDevice device;
-  }
+parcelable VendorEffect {
+  android.os.PersistableBundle vendorData;
+  android.hardware.vibrator.EffectStrength strength = android.hardware.vibrator.EffectStrength.MEDIUM;
+  float scale;
 }
