@@ -23,7 +23,6 @@
 #include <cutils/ashmem.h>
 #include <gtest/gtest.h>
 #include <ui/DisplayId.h>
-#include <ui/DisplayIdentification.h>
 #include <ui/GraphicBuffer.h>
 #include <ui/PixelFormat.h>
 #include <ui/Rect.h>
@@ -801,6 +800,11 @@ TEST_P(GraphicsCompositionTest, MixedColorSpaces) {
                             .reader.takeChangedCompositionTypes(display.getDisplayId());
             ASSERT_TRUE(changedCompositionTypes.empty());
             ASSERT_TRUE(mDisplayProperties.at(display.getDisplayId()).reader.takeErrors().empty());
+
+            mComposerClient->destroyLayer(display.getDisplayId(), srgbLayer->getLayer(),
+                    &mDisplayProperties.at(display.getDisplayId()).writer);
+            mComposerClient->destroyLayer(display.getDisplayId(), displayP3Layer->getLayer(),
+                    &mDisplayProperties.at(display.getDisplayId()).writer);
         }
     }
 }
