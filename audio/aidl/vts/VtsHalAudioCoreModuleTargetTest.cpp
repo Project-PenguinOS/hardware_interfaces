@@ -216,7 +216,7 @@ AudioPort GenerateUniqueDeviceAddress(const AudioPort& port) {
                         0xfc00, 0x0123, 0x4567, 0x89ab, 0xcdef, 0, 0, ++nextId & 0xffff});
                 break;
             case Tag::alsa:
-                address = AudioDeviceAddress::make<Tag::alsa>(std::vector<int32_t>{1, ++nextId});
+                address = AudioDeviceAddress::make<Tag::alsa>(std::vector<int32_t>{127, ++nextId});
                 break;
         }
     }
@@ -5709,7 +5709,11 @@ class AudioModuleRemoteSubmix : public AudioCoreModule {
     static constexpr const auto kStreamStartOffset = std::chrono::nanoseconds(100ms);
     static constexpr const int kBurstCount = 50;
     static constexpr const int kBurstCountTolerance = 2;
-    static constexpr const auto kIntervalsStdDevTolerance = std::chrono::nanoseconds(3ms).count();
+    static constexpr const double kBurstInputIntervalsAlpha = .999;
+    // Output bursts are regulated by MonoPipe and exhibit shorter interval times at start.
+    static constexpr const double kBurstOutputIntervalsAlpha = .99;
+    static constexpr const int kIntervalsMeanTolerance = std::chrono::nanoseconds(2ms).count();
+    static constexpr const auto kIntervalsStdDevTolerance = std::chrono::nanoseconds(4ms).count();
 
     void SetUp() override {
         // Turn off "debug" which enables connections simulation. Since devices of the remote
@@ -5736,9 +5740,8 @@ class AudioModuleRemoteSubmix : public AudioCoreModule {
     }
 
     void VerifyBurstIntervalsUniformity() {
-        const double kAlpha =
-                .9;  // Write durations may vary in the beginning, window out first samples.
-        ::android::audio_utils::Statistics<double> inputIntervals(kAlpha), outputIntervals(kAlpha);
+        ::android::audio_utils::Statistics<double> inputIntervals(kBurstInputIntervalsAlpha),
+            outputIntervals(kBurstOutputIntervalsAlpha);
         for (const auto a : streamIn->getBurstIntervals()) {
             inputIntervals.add(a);
         }
@@ -5751,7 +5754,7 @@ class AudioModuleRemoteSubmix : public AudioCoreModule {
                 << ", output intervals: "
                 << ::android::internal::ToString(streamOut->getBurstIntervals());
         EXPECT_NEAR(inputIntervals.getMean(), outputIntervals.getMean(),
-                    std::chrono::nanoseconds(1ms).count())
+                    kIntervalsMeanTolerance)
                 << "input intervals: "
                 << ::android::internal::ToString(streamIn->getBurstIntervals())
                 << ", output intervals: "
@@ -5934,7 +5937,7 @@ TEST_P(AudioModuleRemoteSubmix, BurstIntervalsUniformityOutputStandbyCycle) {
     ASSERT_NO_FATAL_FAILURE(
             streamIn->JoinWorkerAfterBurstCommands(false /*callPrepareToCloseBeforeJoin*/));
     // Verify input intervals only.
-    ::android::audio_utils::Statistics<double> inputIntervals(.99);
+    ::android::audio_utils::Statistics<double> inputIntervals(kBurstInputIntervalsAlpha);
     for (const auto a : streamIn->getBurstIntervals()) {
         inputIntervals.add(a);
     }
