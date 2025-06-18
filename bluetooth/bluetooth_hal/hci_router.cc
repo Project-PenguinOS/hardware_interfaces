@@ -37,6 +37,7 @@
 #include "bluetooth_hal/hal_types.h"
 #include "bluetooth_hal/hci_monitor.h"
 #include "bluetooth_hal/hci_router_callback.h"
+#include "bluetooth_hal/hci_router_client_agent.h"
 #include "bluetooth_hal/transport/transport_interface.h"
 #include "bluetooth_hal/util/power/wakelock.h"
 #include "bluetooth_hal/util/worker.h"
@@ -202,6 +203,14 @@ class TxHandler {
 
     VndSnoopLogger::GetLogger().Capture(packet,
                                         VndSnoopLogger::Direction::kOutgoing);
+    if (HciRouterClientAgent::GetAgent().DispatchPacketToClients(packet) ==
+        MonitorMode::kIntercept) {
+      // TODO: b/417582927 - Should force the client to provide an event if a
+      // command is intercepted.
+      LOG(INFO) << __func__ << ": packet intercepted by a client, "
+                << packet.ToString();
+      return true;
+    }
 
     return TransportInterface::GetTransport().Send(packet);
   }
@@ -232,8 +241,6 @@ class HciRouterImpl : virtual public HciRouter,
   bool SendCommand(const HalPacket& packet,
                    const HalPacketCallback& callback) override;
   bool SendCommandNoAck(const HalPacket& packet) override;
-  bool RegisterCallback(HciRouterCallback* callback) override;
-  bool UnregisterCallback(HciRouterCallback* callback) override;
   HalState GetHalState() override;
   void UpdateHalState(HalState state) override;
   void SendPacketToStack(const HalPacket& packet) override;
@@ -245,15 +252,12 @@ class HciRouterImpl : virtual public HciRouter,
   bool InitializeModules();
   bool SendToTransport(const HalPacket& packet);
   void HandleCommandCompleteOrCommandStatusEvent(const HalPacket& event);
-  MonitorMode DeliverPacketToClientMonitor(const HalPacket& packet);
   bool InitializeTransport();
   bool IsHalStateValid(HalState new_state);
   void HandleReceivedPacket(const HalPacket& packet);
 
   // callback for the stack.
   std::shared_ptr<HciRouterCallback> hci_callback_;
-  // callback for the router clients.
-  std::unordered_set<HciRouterCallback*> router_callbacks_;
   HalState hal_state_ = HalState::kShutdown;
   std::unique_ptr<TxHandler> tx_handler_;
   std::recursive_mutex mutex_;
@@ -413,6 +417,13 @@ bool HciRouterImpl::Send(const HalPacket& packet) {
 
 bool HciRouterImpl::SendCommand(const HalPacket& packet,
                                 const HalPacketCallback& callback) {
+  if (packet.GetCommandOpcode() ==
+      static_cast<uint16_t>(CommandOpCode::kGoogleDebugInfo)) {
+    // Skip HCI queue for Google Debug Info command, as it is designed to ignore
+    // the HCI command credit.
+    SendCommandNoAck(packet);
+    return true;
+  }
   tx_handler_->Post(TxTask::SendOrQueueCommand(
       packet, std::make_shared<HalPacketCallback>(callback)));
   return true;
@@ -423,25 +434,6 @@ bool HciRouterImpl::SendCommandNoAck(const HalPacket& packet) {
   return true;
 }
 
-bool HciRouterImpl::RegisterCallback(HciRouterCallback* callback) {
-  std::unique_lock<std::recursive_mutex> lock(mutex_);
-  if (router_callbacks_.count(callback) > 0) {
-    LOG(WARNING) << "callback already registered!";
-    return false;
-  }
-  router_callbacks_.insert(callback);
-  return true;
-}
-
-bool HciRouterImpl::UnregisterCallback(HciRouterCallback* callback) {
-  std::unique_lock<std::recursive_mutex> lock(mutex_);
-  if (router_callbacks_.erase(callback) == 0) {
-    LOG(WARNING) << "callback was not registered!";
-    return false;
-  }
-  return true;
-}
-
 HalState HciRouterImpl::GetHalState() {
   std::unique_lock<std::recursive_mutex> lock(mutex_);
   return hal_state_;
@@ -449,21 +441,6 @@ HalState HciRouterImpl::GetHalState() {
 
 void HciRouterImpl::SendPacketToStack(const HalPacket& packet) {
   HandleReceivedPacket(packet);
-}
-
-MonitorMode HciRouterImpl::DeliverPacketToClientMonitor(
-    const HalPacket& packet) {
-  std::unique_lock<std::recursive_mutex> lock(mutex_);
-  MonitorMode result = MonitorMode::kNone;
-  for (HciRouterCallback* callback : router_callbacks_) {
-    if (callback == nullptr) {
-      LOG(WARNING) << "null router client callback in the registration list!";
-      continue;
-    }
-    MonitorMode mode = callback->OnPacketCallback(packet);
-    result = (mode > result) ? mode : result;
-  }
-  return result;
 }
 
 bool HciRouterImpl::InitializeTransport() {
@@ -534,10 +511,7 @@ void HciRouterImpl::UpdateHalState(HalState state) {
   if (hci_callback_ != nullptr) {
     hci_callback_->OnHalStateChanged(state, old_state);
   }
-
-  for (HciRouterCallback* callback : router_callbacks_) {
-    callback->OnHalStateChanged(state, old_state);
-  }
+  HciRouterClientAgent::GetAgent().NotifyHalStateChange(state, old_state);
 
   TransportInterface::GetTransport().NotifyHalStateChange(state);
 }
@@ -553,7 +527,8 @@ void HciRouterImpl::HandleReceivedPacket(const HalPacket& packet) {
     HandleCommandCompleteOrCommandStatusEvent(packet);
     return;
   }
-  if (DeliverPacketToClientMonitor(packet) != MonitorMode::kIntercept &&
+  if (HciRouterClientAgent::GetAgent().DispatchPacketToClients(packet) !=
+          MonitorMode::kIntercept &&
       hci_callback_ != nullptr) {
     hci_callback_->OnPacketCallback(packet);
   }
@@ -577,7 +552,8 @@ void HciRouterImpl::HandleCommandCompleteOrCommandStatusEvent(
     return;
   }
 
-  if (DeliverPacketToClientMonitor(event) != MonitorMode::kIntercept) {
+  if (HciRouterClientAgent::GetAgent().DispatchPacketToClients(event) !=
+      MonitorMode::kIntercept) {
     (*callback)(event);
   }
 

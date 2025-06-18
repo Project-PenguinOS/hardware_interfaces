@@ -23,6 +23,7 @@ cc_defaults {
         ":hal_hwinit_srcs",
         ":hal_transport_srcs",
         ":hal_util_srcs",
+        ":hal_bqr_srcs",
     ],
     cflags: [
         "-Wall",
@@ -64,6 +65,7 @@ filegroup {
         "bluetooth_hci.cc",
         "hci_router.cc",
         "hci_router_client.cc",
+        "hci_router_client_agent.cc",
     ],
 }
 
@@ -85,6 +87,15 @@ filegroup {
         "debug/stack_trace_helper.cc",
         "debug/vnd_snoop_logger.cc",
         "debug/debug_event_watcher.cc",
+    ],
+}
+
+filegroup {
+    name: "hal_bqr_srcs",
+    srcs: [
+        "bqr/bqr_handler.cc",
+        "bqr/bqr_event.cc",
+        "bqr/bqr_link_quality_event.cc",
     ],
 }
 
@@ -117,6 +128,7 @@ filegroup {
     name: "hal_hwinit_srcs",
     srcs: [
         "chip/chip_provisioner.cc",
+        "chip/chip_provisioner_interface.cc",
         "chip/async_chip_provisioner.cc",
     ],
 }
@@ -190,6 +202,21 @@ cc_test {
 }
 
 cc_test {
+    name: "bluetooth_hal_router_client_agent_test",
+    defaults: ["bluetooth_hal_test_defaults"],
+    srcs: [
+        "hci_router_client_agent_test.cc",
+        "hci_router_client_agent.cc",
+    ],
+    static_libs: [
+        "libgmock",
+    ],
+    shared_libs: [
+        "libbase",
+    ],
+}
+
+cc_test {
     name: "bluetooth_hal_hci_router_test",
     defaults: ["bluetooth_hal_test_defaults"],
     srcs: [
@@ -203,6 +230,7 @@ cc_test {
         ":test_mock_transport_srcs",
         ":test_mock_util_srcs",
         ":test_mock_debug_srcs",
+        ":test_mock_router_client_agent_srcs",
     ],
     static_libs: [
         "libgmock",
@@ -496,6 +524,20 @@ cc_test {
     srcs: [
         "util/timer_manager.cc",
         "util/timer_manager_test.cc",
+    ],
+    shared_libs: [
+        "libbase",
+    ],
+}
+
+cc_test {
+    name: "bluetooth_hal_bqr_test",
+    defaults: ["bluetooth_hal_test_defaults"],
+    srcs: [
+        "bqr/bqr_event.cc",
+        "bqr/bqr_event_test.cc",
+        "bqr/bqr_link_quality_event.cc",
+        "bqr/bqr_link_quality_event_test.cc",
     ],
     shared_libs: [
         "libbase",
