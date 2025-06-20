@@ -22,12 +22,12 @@
 #include "bluetooth_hal/hal_packet.h"
 #include "bluetooth_hal/hal_types.h"
 #include "bluetooth_hal/hci_monitor.h"
-#include "bluetooth_hal/hci_router_callback.h"
+#include "bluetooth_hal/hci_router_client_callback.h"
 
 namespace bluetooth_hal {
 namespace hci {
 
-class HciRouterClient : public HciRouterCallback {
+class HciRouterClient : public HciRouterClientCallback {
  public:
   HciRouterClient();
   ~HciRouterClient();
@@ -66,7 +66,7 @@ class HciRouterClient : public HciRouterCallback {
    * @param new_state The new HAL state.
    *
    * @note It is **not recommended** to implement this method. The
-   * `HciRouterClient` class handles all HAL state change logic. Instead,
+   * `HciRouterClientAgent` class handles all HAL state change logic. Instead,
    * subclasses can use the following methods to determine the HAL state:
    *        - `OnBluetoothChipReady()`
    *        - `OnBluetoothChipClosed()`
@@ -76,8 +76,9 @@ class HciRouterClient : public HciRouterCallback {
    *        - `IsBluetoothChipReady()`
    *
    */
-  void OnHalStateChanged(::bluetooth_hal::HalState new_state,
-                         ::bluetooth_hal::HalState old_state) override;
+  void OnHalStateChanged(
+      [[maybe_unused]] ::bluetooth_hal::HalState new_state,
+      [[maybe_unused]] ::bluetooth_hal::HalState old_state) override {};
 
  protected:
   /**
@@ -196,12 +197,8 @@ class HciRouterClient : public HciRouterCallback {
   bool SendData(const HalPacket& packet);
 
  private:
-  void HandleBluetoothEnable(const HalPacket& packet);
   std::map<HciMonitor, MonitorMode> monitors_;
   std::recursive_mutex mutex_;
-  ::bluetooth_hal::HalState current_state_;
-  bool is_bluetooth_chip_ready_ = false;
-  bool is_bluetooth_enabled_ = false;
 };
 
 }  // namespace hci
