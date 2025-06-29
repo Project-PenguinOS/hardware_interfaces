@@ -89,6 +89,24 @@ class TxTask {
                   std::promise<std::shared_ptr<HalPacketCallback>>()};
   }
 
+  std::string ToString() const {
+    switch (type) {
+      case TxTaskType::kSendOrQueueCommand:
+        return "SendOrQueueCommand";
+      case TxTaskType::kGetCommandCallback:
+        return "GetCommandCallback";
+      case TxTaskType::kOnCommandCallbackCompleted:
+        return "OnCommandCallbackCompleted";
+      case TxTaskType::kSendToTransport:
+        return "SendToTransport";
+      default: {
+        std::ostringstream oss;
+        oss << "UnknownType(" << static_cast<int>(type) << ")";
+        return oss.str();
+      }
+    }
+  }
+
   TxTaskType type;
   HalPacket packet;
   std::shared_ptr<HalPacketCallback> callback;
@@ -108,12 +126,19 @@ class TxHandler {
  public:
   TxHandler() {
     tx_thread_ = std::make_unique<util::Worker<TxTask>>(
-        std::bind_front(&TxHandler::PacketDispatcher, this));
+        std::bind_front(&TxHandler::TxTaskDispatcher, this));
   }
 
   ~TxHandler() { SetBusy(false); }
 
-  void Post(TxTask task) { tx_thread_->Post(std::move(task)); }
+  void Post(TxTask task) {
+    HAL_LOG(VERBOSE) << "TxHandler: posting TxTask type:" << task.ToString();
+    if (tx_thread_->Post(std::move(task))) {
+      // Vote for RouterTask wakelock only if the task is successfully posted to
+      // the task queue.
+      VoteRouterTaskWakelock();
+    }
+  }
 
  private:
   struct QueuedHciCommand {
@@ -122,7 +147,10 @@ class TxHandler {
     std::shared_ptr<HalPacketCallback> callback;
   };
 
-  void PacketDispatcher(TxTask task) {
+  void TxTaskDispatcher(TxTask task) {
+    DURATION_TRACKER(AnchorType::kTxTask, __func__);
+    HAL_LOG(VERBOSE) << "TxHandler: dispatching TxTask type:"
+                     << task.ToString();
     switch (task.type) {
       case TxTask::TxTaskType::kSendOrQueueCommand:
         SendOrQueueCommand(task.packet, task.callback);
@@ -137,9 +165,10 @@ class TxHandler {
         SendToTransport(task.packet);
         break;
       default:
-        LOG(ERROR) << "Unknown TxTask type: " << static_cast<int>(task.type);
+        HAL_LOG(ERROR) << "Unknown TxTask type:" << task.ToString();
         break;
     }
+    UnvoteRouterTaskWakelock();
   }
 
   bool SendOrQueueCommand(const HalPacket& packet,
@@ -150,7 +179,7 @@ class TxHandler {
     if (is_queue_busy) {
       // Queue the current command and wait for the previous command to be
       // completed.
-      LOG(INFO) << "command queued: " << packet.ToString();
+      HAL_LOG(INFO) << "command queued: " << packet.ToString();
       return true;
     }
 
@@ -196,19 +225,21 @@ class TxHandler {
 
   bool SendToTransport(const HalPacket& packet) {
     ScopedWakelock wakelock(WakeSource::kTx);
+    HAL_LOG(VERBOSE) << __func__ << ": " << packet.ToString();
     if (!TransportInterface::GetTransport().IsTransportActive()) {
-      LOG(ERROR) << "Transport not active! packet: " << packet.ToString();
+      HAL_LOG(ERROR) << "Transport not active! packet: " << packet.ToString();
       return false;
     }
 
     VndSnoopLogger::GetLogger().Capture(packet,
                                         VndSnoopLogger::Direction::kOutgoing);
-    if (HciRouterClientAgent::GetAgent().DispatchPacketToClients(packet) ==
-        MonitorMode::kIntercept) {
+    if (packet.GetType() == HciPacketType::kCommand &&
+        HciRouterClientAgent::GetAgent().DispatchPacketToClients(packet) ==
+            MonitorMode::kIntercept) {
       // TODO: b/417582927 - Should force the client to provide an event if a
       // command is intercepted.
-      LOG(INFO) << __func__ << ": packet intercepted by a client, "
-                << packet.ToString();
+      HAL_LOG(DEBUG) << __func__ << ": packet intercepted by a client, "
+                     << packet.ToString();
       return true;
     }
 
@@ -226,6 +257,24 @@ class TxHandler {
     TransportInterface::GetTransport().SetHciRouterBusy(busy);
   }
 
+  void VoteRouterTaskWakelock() {
+    std::unique_lock<std::mutex> lock(task_wakelock_mutex_);
+    if (wake_lock_votes_ == 0) {
+      Wakelock::GetWakelock().Acquire(WakeSource::kRouterTask);
+    }
+    wake_lock_votes_++;
+  }
+
+  void UnvoteRouterTaskWakelock() {
+    std::unique_lock<std::mutex> lock(task_wakelock_mutex_);
+    wake_lock_votes_--;
+    if (wake_lock_votes_ == 0) {
+      Wakelock::GetWakelock().Release(WakeSource::kRouterTask);
+    }
+  }
+
+  std::mutex task_wakelock_mutex_;
+  int wake_lock_votes_ = 0;
   std::queue<QueuedHciCommand> hci_cmd_queue_;
   std::unique_ptr<util::Worker<TxTask>> tx_thread_;
   std::atomic<bool> is_busy_;
@@ -320,9 +369,9 @@ HciRouterImpl::HciRouterImpl() {
 
 bool HciRouterImpl::Initialize(
     const std::shared_ptr<HciRouterCallback>& callback) {
-  DURATION_TRACKER(AnchorType::BTHAL_PERFORM_INIT, __func__);
+  DURATION_TRACKER(AnchorType::kRouterInitialize, __func__);
   std::scoped_lock<std::recursive_mutex> lock(mutex_);
-  LOG(INFO) << "Initializing Bluetooth HCI Router.";
+  HAL_LOG(INFO) << "Initializing Bluetooth HCI Router.";
   hci_callback_ = callback;
   return InitializeModules();
 }
@@ -444,14 +493,15 @@ void HciRouterImpl::SendPacketToStack(const HalPacket& packet) {
 }
 
 bool HciRouterImpl::InitializeTransport() {
-  LOG(INFO) << "Initializing Bluetooth transport.";
+  HAL_LOG(INFO) << "Initializing Bluetooth transport.";
   return TransportInterface::GetTransport().Initialize(this);
 }
 
 void HciRouterImpl::UpdateHalState(HalState state) {
   std::scoped_lock<std::recursive_mutex> lock(mutex_);
-  LOG(INFO) << "Bluetooth HAL state changed: " << static_cast<int>(hal_state_)
-            << " -> " << static_cast<int>(state);
+  HAL_LOG(INFO) << "Bluetooth HAL state changed: "
+                << static_cast<int>(hal_state_) << " -> "
+                << static_cast<int>(state);
   if (!IsHalStateValid(state)) {
     LOG(FATAL) << "Invalid Bluetooth HAL state changed! "
                << static_cast<int>(hal_state_) << " -> "
@@ -562,6 +612,8 @@ void HciRouterImpl::HandleCommandCompleteOrCommandStatusEvent(
 
 void HciRouterImpl::OnTransportPacketReady(const HalPacket& packet) {
   ScopedWakelock wakelock(WakeSource::kRx);
+  DURATION_TRACKER(AnchorType::kRxTask, __func__);
+  HAL_LOG(VERBOSE) << __func__ << ": " << packet.ToString();
 
   std::scoped_lock<std::recursive_mutex> lock(mutex_);
   if (hal_state_ == HalState::kShutdown) {
