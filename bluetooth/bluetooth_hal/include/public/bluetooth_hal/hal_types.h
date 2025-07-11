@@ -35,7 +35,6 @@ class Property {
       "bluetooth.transport.fallback";
   static constexpr char kIsAcceleratedBtOnEnabled[] =
       "persist.bluetooth.accelerate.bt.on.enabled";
-  static constexpr char kCdtHwId[] = "ro.boot.cdt_hwid";
   static constexpr char kProductName[] = "ro.product.name";
   static constexpr char kBuildType[] = "ro.build.type";
   static constexpr char kShutDownAction[] = "sys.shutdown.requested";
@@ -91,6 +90,12 @@ enum class HciPacketType : uint8_t {
   kIsoData = 0x05,
   kThreadData = 0x70,  // Vendor-specific.
   kHdlcData = 0x7e,    // Vendor-specific.
+};
+
+enum class PacketDestination : uint8_t {
+  kNone,
+  kController,
+  kHost,
 };
 
 enum class MonitorMode : int {

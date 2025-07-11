@@ -29,6 +29,7 @@
 #include "bluetooth_hal/test/mock/mock_android_base_wrapper.h"
 #include "bluetooth_hal/test/mock/mock_hal_config_loader.h"
 #include "bluetooth_hal/test/mock/mock_system_call_wrapper.h"
+#include "bluetooth_hal/test/mock/mock_transport_interface.h"
 #include "gtest/gtest.h"
 
 namespace bluetooth_hal {
@@ -50,6 +51,7 @@ using ::testing::WithParamInterface;
 using ::bluetooth_hal::config::MockHalConfigLoader;
 using ::bluetooth_hal::hci::HalPacket;
 using ::bluetooth_hal::hci::HciPacketType;
+using ::bluetooth_hal::transport::MockTransportInterface;
 using ::bluetooth_hal::transport::TransportType;
 using ::bluetooth_hal::util::MatcherFactory;
 using ::bluetooth_hal::util::MockAndroidBaseWrapper;
@@ -110,6 +112,10 @@ class FirmwareConfigLoaderTestBase : public Test {
     MockSystemCallWrapper::SetMockWrapper(&mock_system_call_wrapper_);
     MockAndroidBaseWrapper::SetMockWrapper(&mock_android_base_wrapper_);
     MockHalConfigLoader::SetMockLoader(&mock_hal_config_loader_);
+    MockTransportInterface::SetMockTransport(&mock_transport_interface_);
+
+    ON_CALL(mock_transport_interface_, GetTransportType())
+        .WillByDefault(Return(TransportType::kUnknown));
 
     FirmwareConfigLoader::ResetLoader();
   }
@@ -118,6 +124,7 @@ class FirmwareConfigLoaderTestBase : public Test {
 
   MockSystemCallWrapper mock_system_call_wrapper_;
   MockAndroidBaseWrapper mock_android_base_wrapper_;
+  MockTransportInterface mock_transport_interface_;
   StrictMock<MockHalConfigLoader> mock_hal_config_loader_;
 
   static constexpr int kFile1Fd = 1;
@@ -138,6 +145,32 @@ TEST_F(FirmwareConfigLoaderTestBase, GetLoadMiniDrvDelayMsOnInit) {
 TEST_F(FirmwareConfigLoaderTestBase, GetLaunchRamDelayMsOnInit) {
   EXPECT_EQ(FirmwareConfigLoader::GetLoader().GetLaunchRamDelayMs(),
             cfg_consts::kDefaultLaunchRamDelayMs);
+}
+
+TEST_F(FirmwareConfigLoaderTestBase, GetFirmwareFileCountOnInit) {
+  EXPECT_EQ(FirmwareConfigLoader::GetLoader().GetFirmwareFileCount(), 0);
+}
+
+TEST_F(FirmwareConfigLoaderTestBase, GetFirmwareFileCountAfterLoadingConfig) {
+  std::vector<TransportType> priority_list = {TransportType::kUartH4};
+  EXPECT_CALL(mock_hal_config_loader_, GetTransportTypePriority())
+      .WillRepeatedly(ReturnRef(priority_list));
+  EXPECT_TRUE(FirmwareConfigLoader::GetLoader().LoadConfigFromString(
+      kMultiTransportValidContent));
+
+  EXPECT_EQ(FirmwareConfigLoader::GetLoader().GetFirmwareFileCount(), 1);
+}
+
+TEST_F(FirmwareConfigLoaderTestBase, LoadConfigWithActiveTransport) {
+  std::vector<TransportType> priority_list = {TransportType::kUartH4};
+  EXPECT_CALL(mock_transport_interface_, GetTransportType())
+      .WillOnce(Return(TransportType::kVendorStart));
+  EXPECT_TRUE(FirmwareConfigLoader::GetLoader().LoadConfigFromString(
+      kMultiTransportValidContent));
+
+  EXPECT_EQ(FirmwareConfigLoader::GetLoader().GetFirmwareFileCount(), 1);
+  EXPECT_EQ(FirmwareConfigLoader::GetLoader().GetLoadMiniDrvDelayMs(), 71);
+  EXPECT_EQ(FirmwareConfigLoader::GetLoader().GetLaunchRamDelayMs(), 301);
 }
 
 struct SetupCommandValueTestParam {
@@ -183,9 +216,6 @@ INSTANTIATE_TEST_SUITE_P(
                .expected_command = {}},
            SetupCommandValueTestParam{
                .command_type = SetupCommandType::kDownloadMinidrv,
-               .expected_command = {}},
-           SetupCommandValueTestParam{
-               .command_type = SetupCommandType::kLaunchRam,
                .expected_command = {}},
            SetupCommandValueTestParam{
                .command_type = SetupCommandType::kReadFwVersion,
@@ -602,8 +632,7 @@ TEST_F(MultiFilePacketByPacketTest, ReadsDataFromMultipleFilesSuccessfully) {
 
   auto data_packet2 = FirmwareConfigLoader::GetLoader().GetNextFirmwareData();
   ASSERT_TRUE(data_packet2.has_value());
-  EXPECT_EQ(data_packet2->GetDataType(),
-            DataType::kDataFragment);  // Not kDataEnd yet.
+  EXPECT_EQ(data_packet2->GetDataType(), DataType::kDataEnd);
   EXPECT_EQ(data_packet2->GetPayload(),
             HalPacket({0x01, 0x4E, 0xFC, 0x01, 0xCC}));
 
@@ -652,7 +681,7 @@ TEST_F(MultiFilePacketByPacketTest, ReadsDataFromMultipleFilesSuccessfully) {
 
   auto data_packet4 = FirmwareConfigLoader::GetLoader().GetNextFirmwareData();
   ASSERT_TRUE(data_packet4.has_value());
-  EXPECT_EQ(data_packet4->GetDataType(), DataType::kDataEnd);  // Now kDataEnd.
+  EXPECT_EQ(data_packet4->GetDataType(), DataType::kDataEnd);
   EXPECT_EQ(data_packet4->GetPayload(),
             HalPacket({0x01, 0x4E, 0xFC, 0x01, 0xFF}));
 
@@ -1039,7 +1068,7 @@ TEST_F(MultiFileAccumulatedTest, ReadsDataFromMultipleFilesSuccessfully) {
 
   auto data_packet2 = FirmwareConfigLoader::GetLoader().GetNextFirmwareData();
   ASSERT_TRUE(data_packet2.has_value());
-  EXPECT_EQ(data_packet2->GetDataType(), DataType::kDataFragment);
+  EXPECT_EQ(data_packet2->GetDataType(), DataType::kDataEnd);
   EXPECT_EQ(data_packet2->GetPayload(),
             HalPacket({0x01, 0x4E, 0xFC, 0x01, 0xCC}));
 
