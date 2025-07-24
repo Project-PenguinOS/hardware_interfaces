@@ -32,6 +32,7 @@
 #include "bluetooth_hal/bqr/bqr_handler.h"
 #include "bluetooth_hal/bqr/bqr_root_inflammation_event.h"
 #include "bluetooth_hal/bqr/bqr_types.h"
+#include "bluetooth_hal/debug/bluetooth_activities.h"
 #include "bluetooth_hal/debug/debug_monitor.h"
 #include "bluetooth_hal/hal_packet.h"
 #include "bluetooth_hal/util/timer_manager.h"
@@ -257,7 +258,7 @@ class DebugCentral {
    * this Bluetooth cycle.
    *
    * @param file_path The path and the prefix of the file, for example
-   * "/path/file" generates a dump file of "/path/file-YYYY-MM-DD-SS.bin".
+   * "/path/file-" generates a dump file of "/path/file-YYYY-MM-DD-SS.bin".
    * @param data The data to write into the file.
    * @param vendor_error_code The vendor specific error code to record in the
    * coredump file. If the coredump was initiated by the vendor implementation,
@@ -315,16 +316,19 @@ class DebugCentral {
   std::map<AnchorType, std::pair<std::string, std::string>> lasttime_record_;
   ::bluetooth_hal::util::Timer debug_info_command_timer_;
   DebugMonitor debug_monitor_;
+  BluetoothActivities bluetooth_activities_;
   ::bluetooth_hal::bqr::BqrHandler bqr_handler_;
   std::unordered_set<std::shared_ptr<CoredumpCallback>> coredump_callbacks_;
   std::mutex coredump_mutex_;
   bool is_coredump_generated_;
 
-  void DumpBluetoothHalLog(int fd);
+  void DumpBluetoothHalLog(int fd, bool add_header = false);
   void GenerateCoredump(CoredumpErrorCode error_code,
                         uint8_t sub_error_code = 0);
   bool OkToGenerateCrashDump(uint8_t error_code);
   bool IsHardwareStageSupported();
+  std::string GetOrCreateCoredumpTimestampString();
+  int OpenOrCreateCoredumpBin(const std::string& file_prefix);
 };
 
 class LogHelper {
