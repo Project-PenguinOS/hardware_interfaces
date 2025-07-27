@@ -638,6 +638,27 @@ class AudioCoreModuleBase {
         }
     }
 
+    void ExecuteDebugDump(std::function<binder_status_t(int)> dumpFunc) {
+        // File descriptors to our pipe. fds[0] corresponds to the read end and
+        // fds[1] to the write end.
+        int fds[2];
+        ASSERT_EQ(0, pipe2(fds, O_NONBLOCK)) << strerror(errno);
+
+        // Make sure that the pipe is at least 1 MB in size. The test process runs
+        // in su domain, so it should be safe to make this call.
+        if (fcntl(fds[0], F_SETPIPE_SZ, 1 << 20) == -1) {
+            LOG(WARNING) << __func__ << "Failed to set pipe size: " << strerror(errno);
+        };
+
+        // File descriptors are automatically closed by unique_fd destructors
+        // No need for manual close() calls
+        android::base::unique_fd readFd(fds[0]);
+        android::base::unique_fd writeFd(fds[1]);
+
+        auto dumpResult = dumpFunc(writeFd.get());
+        ASSERT_EQ(dumpResult, STATUS_OK) << "Debug dump must not fail";
+    }
+
     // Warning: modifies the vectors!
     template <typename T>
     void VerifyVectorsAreEqual(std::vector<T>& v1, std::vector<T>& v2) {
@@ -1521,10 +1542,16 @@ class WithStream : public StreamWorkerMethods {
     WithStream& operator=(const WithStream&) = delete;
     ~WithStream() {
         if (mStream != nullptr) {
-            mContext.reset();
-            EXPECT_IS_OK(callClose(mStream)) << "port config id " << getPortId();
+            EXPECT_NO_FATAL_FAILURE(close());
         }
     }
+
+    void close() {
+        mContext.reset();
+        EXPECT_IS_OK(callClose(mStream)) << "port config id " << getPortId();
+        mStream = nullptr;
+    }
+
     void SetUpPortConfig(IModule* module) { ASSERT_NO_FATAL_FAILURE(mPortConfig.SetUp(module)); }
     ScopedAStatus SetUpNoChecks(IModule* module, long bufferSizeFrames) {
         return SetUpNoChecks(module, mPortConfig.get(), bufferSizeFrames);
@@ -2773,6 +2800,11 @@ TEST_P(AudioCoreModule, GetAAudioHardwareBurstMinUsec) {
     EXPECT_GE(aaudioHardwareBurstMinUsec, 0);
 }
 
+TEST_P(AudioCoreModule, DebugDump) {
+    ASSERT_NO_FATAL_FAILURE(
+            ExecuteDebugDump([module = module](int fd) { return module->dump(fd, {}, 0); }));
+}
+
 class AudioCoreBluetooth : public AudioCoreModuleBase, public testing::TestWithParam<std::string> {
   public:
     void SetUp() override {
@@ -3676,6 +3708,16 @@ class AudioStream : public AudioCoreModule {
                 << "getStreamCommon must return the same interface instance across invocations";
     }
 
+    void Close() {
+        const auto portConfig = moduleConfig->getSingleConfigForMixPort(IOTraits<Stream>::is_input);
+        if (!portConfig.has_value()) {
+            GTEST_SKIP() << "No mix port for attached devices";
+        }
+        WithStream<Stream> stream(portConfig.value());
+        ASSERT_NO_FATAL_FAILURE(stream.SetUp(module.get(), kDefaultLargeBufferSizeFrames));
+        ASSERT_NO_FATAL_FAILURE(stream.close());
+    }
+
     void CloseTwice() {
         std::shared_ptr<Stream> heldStream;
         {
@@ -4041,6 +4083,15 @@ class AudioStream : public AudioCoreModule {
             EXPECT_EQ("", driver.getUnexpectedStatuses());
         }
     }
+
+    void StreamDebugDump() {
+        StreamFixture<Stream> stream;
+        ASSERT_NO_FATAL_FAILURE(stream.SetUpStreamForAnyMixPort(module.get(), moduleConfig.get()));
+        if (auto reason = stream.skipTestReason(); !reason.empty()) {
+            GTEST_SKIP() << reason;
+        }
+        ExecuteDebugDump([&stream](int fd) { return stream.getStream()->dump(fd, {}, 0); });
+    }
 };
 using AudioStreamIn = AudioStream<IStreamIn>;
 using AudioStreamOut = AudioStream<IStreamOut>;
@@ -4053,6 +4104,7 @@ using AudioStreamOut = AudioStream<IStreamOut>;
         ASSERT_NO_FATAL_FAILURE(method_name()); \
     }
 
+TEST_IN_AND_OUT_STREAM(Close);
 TEST_IN_AND_OUT_STREAM(CloseTwice);
 TEST_IN_AND_OUT_STREAM(PrepareToCloseTwice);
 TEST_IN_AND_OUT_STREAM(GetStreamCommon);
@@ -4068,6 +4120,7 @@ TEST_IN_AND_OUT_STREAM(GetVendorParameters);
 TEST_IN_AND_OUT_STREAM(SetVendorParameters);
 TEST_IN_AND_OUT_STREAM(HwGainHwVolume);
 TEST_IN_AND_OUT_STREAM(AddRemoveEffectInvalidArguments);
+TEST_IN_AND_OUT_STREAM(StreamDebugDump);
 
 namespace aidl::android::hardware::audio::core {
 std::ostream& operator<<(std::ostream& os, const IStreamIn::MicrophoneDirection& md) {
