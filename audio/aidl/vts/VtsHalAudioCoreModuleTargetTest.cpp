@@ -2289,7 +2289,7 @@ TEST_P(AudioCoreModule, SetAudioPortConfigInvalidPortAudioGain) {
     std::vector<AudioPort> ports;
     ASSERT_IS_OK(module->getAudioPorts(&ports));
     bool atLeastOnePortWithNonemptyGain = false;
-    for (const auto port : ports) {
+    for (const auto& port : ports) {
         AudioPortConfig portConfig;
         portConfig.portId = port.id;
         if (port.gains.empty()) {
@@ -3632,7 +3632,7 @@ static bool skipStreamIoTestForMixPortConfig(const AudioPortConfig& portConfig,
                                      {AudioOutputFlags::VOIP_RX, AudioOutputFlags::INCALL_MUSIC}) ||
              (isBitPositionFlagSet(portConfig.flags.value().template get<AudioIoFlags::output>(),
                                    AudioOutputFlags::COMPRESS_OFFLOAD) &&
-              (aidlVersion <= kAidlVersion3 || !getMediaFileInfoForConfig(portConfig)))));
+              (aidlVersion <= kAidlVersion4 || !getMediaFileInfoForConfig(portConfig)))));
 }
 
 // Certain types of devices can not be used without special preconditions.
