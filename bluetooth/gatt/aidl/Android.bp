@@ -1,4 +1,4 @@
-// Copyright (C) 2023 The Android Open Source Project
+// Copyright (C) 2025 The Android Open Source Project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,7 +13,6 @@
 // limitations under the License.
 
 package {
-    default_team: "trendy_team_fwk_wifi_hal",
     // See: http://go/android-license-faq
     // A large-scale-change added 'default_applicable_licenses' to import
     // all of the 'license_kinds' from "hardware_interfaces_license"
@@ -23,50 +22,28 @@ package {
 }
 
 aidl_interface {
-    name: "android.hardware.wifi.common",
+    name: "android.hardware.bluetooth.gatt",
     vendor_available: true,
-    srcs: [
-        "android/hardware/wifi/common/*.aidl",
-    ],
-    headers: [
-        "PersistableBundle_aidl",
+    host_supported: true,
+    srcs: ["android/hardware/bluetooth/gatt/*.aidl"],
+    imports: [
+        "android.hardware.contexthub-V4",
     ],
     stability: "vintf",
     backend: {
+        rust: {
+            enabled: true,
+        },
         java: {
-            sdk_version: "module_current",
-            apex_available: [
-                "//apex_available:platform",
-                "com.android.wifi",
-            ],
-            min_sdk_version: "30",
+            enabled: false,
         },
         ndk: {
-            gen_trace: true,
             apex_available: [
                 "//apex_available:platform",
-                "com.android.wifi",
+                "com.android.bt",
             ],
-            min_sdk_version: "30",
-        },
-        cpp: {
-            enabled: false,
-        },
-        rust: {
-            enabled: false,
+            min_sdk_version: "33",
         },
     },
-    versions_with_info: [
-        {
-            version: "1",
-            imports: [],
-        },
-        {
-            version: "2",
-            imports: [],
-        },
-
-    ],
-    frozen: true,
-
+    frozen: false,
 }

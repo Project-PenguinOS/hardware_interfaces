@@ -1,5 +1,5 @@
 /*
- * Copyright 2020 The Android Open Source Project
+ * Copyright (C) 2025 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,12 +31,26 @@
 // with such a backward incompatible change, it has a high risk of breaking
 // later when a module using the interface is updated, e.g., Mainline modules.
 
-package android.hardware.common.fmq;
-/* @hide */
+package android.hardware.bluetooth.gatt;
 @VintfStability
-parcelable MQDescriptor<@FixedSize T, Flavor> {
-  android.hardware.common.fmq.GrantorDescriptor[] grantors;
-  android.hardware.common.NativeHandle handle;
-  int quantum;
-  int flags;
+interface IBluetoothGattCallback {
+  void registerServiceComplete(int sessionId, in android.hardware.bluetooth.gatt.IBluetoothGattCallback.Status status, in String reason);
+  void unregisterServiceComplete(int sessionId, in String reason);
+  void clearServicesComplete(int aclConnectionHandle, in String reason);
+  void errorReport(in int aclConnectionHandle, in int localCid, in android.hardware.bluetooth.gatt.IBluetoothGattCallback.Error error, in String reason);
+  @Backing(type="int") @VintfStability
+  enum Error {
+    UNKNOWN,
+    DATABASE_OUT_OF_SYNC,
+    RESPONSE_TIMEOUT,
+    PROTOCOL_VIOLATION,
+  }
+  @Backing(type="int") @VintfStability
+  enum Status {
+    SUCCESS = 0,
+    INVALID_ENDPOINT_ID,
+    UNSUPPORTED_ROLE,
+    INSUFFICIENT_RESOURCES,
+    FAILURE,
+  }
 }
