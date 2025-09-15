@@ -1,5 +1,5 @@
 /*
- * Copyright 2020 The Android Open Source Project
+ * Copyright (C) 2025 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,12 +31,10 @@
 // with such a backward incompatible change, it has a high risk of breaking
 // later when a module using the interface is updated, e.g., Mainline modules.
 
-package android.hardware.common.fmq;
-/* @hide */
+package android.hardware.bluetooth.gatt;
 @VintfStability
-parcelable MQDescriptor<@FixedSize T, Flavor> {
-  android.hardware.common.fmq.GrantorDescriptor[] grantors;
-  android.hardware.common.NativeHandle handle;
-  int quantum;
-  int flags;
+parcelable GattCharacteristic {
+  android.hardware.bluetooth.gatt.Uuid uuid;
+  int properties;
+  int valueHandle;
 }
