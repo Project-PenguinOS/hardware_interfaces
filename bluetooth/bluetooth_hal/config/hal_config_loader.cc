@@ -48,7 +48,6 @@ using ::bluetooth_hal::util::AndroidBaseWrapper;
 
 using ::google::protobuf::util::JsonParseOptions;
 using ::google::protobuf::util::JsonStringToMessage;
-using ::google::protobuf::util::Status;
 
 namespace cfg_consts = ::bluetooth_hal::config::constants;
 
@@ -95,7 +94,7 @@ class HalConfigLoaderImpl : public HalConfigLoader {
   bool IsBtPowerControlledByLpp() const override;
   const std::vector<std::string>& GetHwStagesWithoutLppControlBtPowerPin()
       const override;
-  const std::vector<std::string>& GetFwUnsupportedHwStages() const override;
+  const std::vector<std::string>& GetUnsupportedHwStages() const override;
   int GetVendorTransportCrashIntervalSec() const override;
   bool IsHpUartSkipSuspendSupported() const override;
   bool IsEnergyControllerLoggingSupported() const override;
@@ -112,6 +111,7 @@ class HalConfigLoaderImpl : public HalConfigLoader {
   const std::string& GetLpmWakelockCtrlProcNode() const override;
   const std::string& GetRfkillFolderPrefix() const override;
   const std::string& GetRfkillTypeBluetooth() const override;
+  bool IsEnhancedPacketValidationSupported() const override;
 
   std::string DumpConfigToString() const override;
 
@@ -127,7 +127,7 @@ class HalConfigLoaderImpl : public HalConfigLoader {
   std::vector<TransportType> transport_priority_list_{
       cfg_consts::kDefaultBtTransportType};
   std::vector<std::string> hw_stages_without_lpp_control_bt_power_pin_;
-  std::vector<std::string> fw_unsupported_hw_stages_;
+  std::vector<std::string> unsupported_hw_stages_;
   TransportType transport_fallback_type_{cfg_consts::kDefaultBtTransportType};
   bool is_fast_download_enabled_{false};
   bool is_sar_backoff_high_resolution_enabled_{false};
@@ -141,6 +141,7 @@ class HalConfigLoaderImpl : public HalConfigLoader {
   bool is_ble_non_connection_sar_enabled_{false};
   int kernel_rx_wake_lock_time_ms_{0};
   bool is_low_power_mode_enabled_{false};
+  bool is_enhanced_packet_validation_supported_{false};
   std::string lpm_enable_proc_node_{cfg_consts::kLpmEnableProcNode};
   std::string lpm_waking_proc_node_{cfg_consts::kLpmWakingProcNode};
   std::string lpm_wakelock_ctrl_proc_node_{
@@ -191,9 +192,9 @@ HalConfigLoaderImpl::GetHwStagesWithoutLppControlBtPowerPin() const {
   return hw_stages_without_lpp_control_bt_power_pin_;
 }
 
-const std::vector<std::string>& HalConfigLoaderImpl::GetFwUnsupportedHwStages()
+const std::vector<std::string>& HalConfigLoaderImpl::GetUnsupportedHwStages()
     const {
-  return fw_unsupported_hw_stages_;
+  return unsupported_hw_stages_;
 }
 
 int HalConfigLoaderImpl::GetVendorTransportCrashIntervalSec() const {
@@ -271,6 +272,10 @@ const std::string& HalConfigLoaderImpl::GetRfkillTypeBluetooth() const {
   return rfkill_type_bluetooth_;
 }
 
+bool HalConfigLoaderImpl::IsEnhancedPacketValidationSupported() const {
+  return is_enhanced_packet_validation_supported_;
+}
+
 void HalConfigLoaderImpl::UpdateBqrEventMask(const std::string& mask) {
   const std::string current_bqr_event_mask =
       AndroidBaseWrapper::GetWrapper().GetProperty(Property::kBqrEventMask,
@@ -325,7 +330,7 @@ bool HalConfigLoaderImpl::LoadConfigFromString(std::string_view content) {
   JsonParseOptions options;
   options.ignore_unknown_fields = true;
 
-  Status status = JsonStringToMessage(content, &config, options);
+  auto status = JsonStringToMessage(content, &config, options);
   if (!status.ok()) {
     LOG(ERROR) << __func__
                << ": Failed to parse json file, error: " << status.message();
@@ -375,10 +380,10 @@ bool HalConfigLoaderImpl::LoadConfigFromString(std::string_view content) {
         config.hw_stages_without_lpp_control_bt_power_pin().end());
   }
 
-  if (config.fw_unsupported_hw_stages_size()) {
-    fw_unsupported_hw_stages_.clear();
-    fw_unsupported_hw_stages_.assign(config.fw_unsupported_hw_stages().begin(),
-                                     config.fw_unsupported_hw_stages().end());
+  if (config.unsupported_hw_stages_size()) {
+    unsupported_hw_stages_.clear();
+    unsupported_hw_stages_.assign(config.unsupported_hw_stages().begin(),
+                                  config.unsupported_hw_stages().end());
   }
 
   if (config.has_vendor_transport_crash_interval_sec()) {
@@ -444,6 +449,11 @@ bool HalConfigLoaderImpl::LoadConfigFromString(std::string_view content) {
     rfkill_type_bluetooth_ = config.rfkill_type_bluetooth();
   }
 
+  if (config.has_enhanced_packet_validation_supported()) {
+    is_enhanced_packet_validation_supported_ =
+        config.enhanced_packet_validation_supported();
+  }
+
   LOG(INFO) << DumpConfigToString();
 
   return true;
@@ -470,8 +480,8 @@ std::string HalConfigLoaderImpl::DumpConfigToString() const {
   ss << "IsBtPowerControlledByLpp: " << IsBtPowerControlledByLpp() << "\n";
   ss << "GetHwStagesWithoutLppControlBtPowerPin: "
      << VectorToString(GetHwStagesWithoutLppControlBtPowerPin()) << "\n";
-  ss << "GetFwUnsupportedHwStages: "
-     << VectorToString(GetFwUnsupportedHwStages()) << "\n";
+  ss << "GetUnsupportedHwStages: " << VectorToString(GetUnsupportedHwStages())
+     << "\n";
   ss << "GetVendorTransportCrashIntervalSec: "
      << GetVendorTransportCrashIntervalSec() << "\n";
   ss << "IsHpUartSkipSuspendSupported: " << IsHpUartSkipSuspendSupported()
@@ -497,6 +507,8 @@ std::string HalConfigLoaderImpl::DumpConfigToString() const {
      << "\"\n";
   ss << "GetRfkillFolderPrefix: \"" << GetRfkillFolderPrefix() << "\"\n";
   ss << "GetRfkillTypeBluetooth: \"" << GetRfkillTypeBluetooth() << "\"\n";
+  ss << "IsEnhancedPacketValidationSupported: \""
+     << IsEnhancedPacketValidationSupported() << "\"\n";
 
   // Runtime checks.
   ss << "IsUserDebugOrEngBuild (Property): " << IsUserDebugOrEngBuild() << "\n";

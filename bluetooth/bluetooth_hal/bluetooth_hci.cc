@@ -26,6 +26,7 @@
 
 #include "android-base/logging.h"
 #include "bluetooth_hal/bluetooth_hci_callback.h"
+#include "bluetooth_hal/debug/bluetooth_activities.h"
 #include "bluetooth_hal/debug/debug_central.h"
 #include "bluetooth_hal/extensions/finder/bluetooth_finder_handler.h"
 #include "bluetooth_hal/hal_packet.h"
@@ -38,6 +39,7 @@ namespace bluetooth_hal {
 
 using ::bluetooth_hal::BluetoothHciCallback;
 using ::bluetooth_hal::HalState;
+using ::bluetooth_hal::debug::BluetoothActivities;
 using ::bluetooth_hal::debug::DebugCentral;
 using ::bluetooth_hal::extensions::finder::BluetoothFinderHandler;
 using ::bluetooth_hal::hci::HalPacket;
@@ -51,7 +53,7 @@ using ::bluetooth_hal::util::power::WakeSource;
 
 using HalStateChangedCallback = std::function<void(HalState, HalState)>;
 
-std::atomic<bool> BluetoothHci::is_signal_handled_{false};
+std::atomic<bool> BluetoothHci::is_sigterm_handled_{false};
 
 class HciCallback : public HciRouterCallback {
  public:
@@ -81,56 +83,74 @@ class HciCallback : public HciRouterCallback {
 BluetoothHci::BluetoothHci() : bluetooth_hci_callback_(nullptr) {
   // Lazily construct the static HciRouter instance.
   HciRouter::GetRouter();
+  BluetoothActivities::Start();
 }
 
 void BluetoothHci::HandleSignal(int signum) {
   LOG(ERROR) << __func__ << ": Received signal: " << signum;
 
-  if (is_signal_handled_.exchange(true)) {
+  if (is_sigterm_handled_.exchange(true)) {
     LOG(WARNING) << __func__ << ": Signal is already handled, Skip.";
     return;
   }
 
-  if (BluetoothFinderHandler::GetHandler().StartPoweredOffFinderMode()) {
-    return;
+  if (!BluetoothFinderHandler::GetHandler().StartPoweredOffFinderMode()) {
+    // Shutdown lower layer if finder is not enabled.
+    Close();
   }
 
-  Close();
   kill(getpid(), SIGKILL);
 }
 
 void BluetoothHci::HandleServiceDied() {
   ANCHOR_LOG(AnchorType::kServiceDied) << __func__;
-  if (bluetooth_hci_callback_ == nullptr) {
-    HAL_LOG(ERROR) << __func__ << ": called but callback is null";
-    return;
+  {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    if (bluetooth_hci_callback_ == nullptr) {
+      HAL_LOG(ERROR) << __func__ << ": called but callback is null";
+      return;
+    }
   }
   HAL_LOG(ERROR) << __func__ << ": Bluetooth service died!";
+  if (DebugCentral::Get().IsCoredumpGenerated()) {
+    LOG(ERROR) << __func__
+               << ": Restart Bluetooth HAL after coredump is generated";
+    kill(getpid(), SIGKILL);
+  }
   Close();
 }
 
 bool BluetoothHci::Initialize(const std::shared_ptr<BluetoothHciCallback>& cb) {
-  DURATION_TRACKER(AnchorType::kInitialize, __func__);
+  SCOPED_ANCHOR(AnchorType::kInitialize, __func__);
   ScopedWakelock wakelock(WakeSource::kInitialize);
 
-  LOG(INFO) << "Initializing Bluetooth HAL.";
-  if (bluetooth_hci_callback_ != nullptr) {
-    LOG(WARNING) << "The HAL has already been initialized!";
-    cb->InitializationComplete(BluetoothHciStatus::kHardwareInitializeError);
-    return false;
-  }
+  HAL_LOG(INFO) << "Initializing Bluetooth HAL, cb=" << cb;
+  {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    if (bluetooth_hci_callback_ != nullptr) {
+      HAL_LOG(WARNING) << "The HAL has already been initialized!";
+      cb->InitializationComplete(BluetoothHciStatus::kHardwareInitializeError);
+      return false;
+    }
 
-  is_initializing_ = true;
-  bluetooth_hci_callback_ = cb;
+    is_initializing_ = true;
+    bluetooth_hci_callback_ = cb;
+  }
 
   auto callback = std::make_shared<HciCallback>(
       std::bind_front(&BluetoothHci::DispatchPacketToStack, this),
       std::bind_front(&BluetoothHci::HandleHalStateChanged, this));
-  return HciRouter::GetRouter().Initialize(callback);
+  if (!HciRouter::GetRouter().Initialize(callback)) {
+    HAL_LOG(ERROR) << "Failed to initialize HciRouter!";
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    is_initializing_ = false;
+    bluetooth_hci_callback_ = nullptr;
+  }
+  return true;
 }
 
 bool BluetoothHci::SendHciCommand(const HalPacket& packet) {
-  DURATION_TRACKER(
+  SCOPED_ANCHOR(
       AnchorType::kSendHciCommand,
       (std::stringstream() << __func__ << ": 0x" << std::hex << std::setw(4)
                            << std::setfill('0') << packet.GetCommandOpcode()
@@ -141,7 +161,7 @@ bool BluetoothHci::SendHciCommand(const HalPacket& packet) {
 }
 
 bool BluetoothHci::SendAclData(const HalPacket& packet) {
-  DURATION_TRACKER(
+  SCOPED_ANCHOR(
       AnchorType::kSendAclData,
       (std::stringstream() << __func__ << ": " << packet.size() << " bytes")
           .str());
@@ -150,7 +170,7 @@ bool BluetoothHci::SendAclData(const HalPacket& packet) {
 }
 
 bool BluetoothHci::SendScoData(const HalPacket& packet) {
-  DURATION_TRACKER(
+  SCOPED_ANCHOR(
       AnchorType::kSendScoData,
       (std::stringstream() << __func__ << ": " << packet.size() << " bytes")
           .str());
@@ -159,7 +179,7 @@ bool BluetoothHci::SendScoData(const HalPacket& packet) {
 }
 
 bool BluetoothHci::SendIsoData(const HalPacket& packet) {
-  DURATION_TRACKER(
+  SCOPED_ANCHOR(
       AnchorType::kSendIsoData,
       (std::stringstream() << __func__ << ": " << packet.size() << " bytes")
           .str());
@@ -168,10 +188,21 @@ bool BluetoothHci::SendIsoData(const HalPacket& packet) {
 }
 
 bool BluetoothHci::Close() {
-  bluetooth_hci_callback_ = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    bluetooth_hci_callback_ = nullptr;
+  }
   ANCHOR_LOG_INFO(AnchorType::kClose) << __func__;
+  HAL_LOG(INFO) << __func__;
   ScopedWakelock wakelock(WakeSource::kClose);
-  HciRouter::GetRouter().Cleanup();
+
+  const bool is_sigterm = is_sigterm_handled_;
+  if (is_sigterm) {
+    // Shutdown the lower layer directly if the Close was from a SIGTERM.
+    HciRouter::GetRouter().Cleanup();
+  } else {
+    HciRouter::GetRouter().Close();
+  }
   return true;
 }
 
@@ -189,14 +220,16 @@ void BluetoothHci::SendDataToController(const HalPacket& packet) {
 }
 
 void BluetoothHci::DispatchPacketToStack(const HalPacket& packet) {
+  std::lock_guard<std::mutex> lock(callback_mutex_);
   if (bluetooth_hci_callback_ == nullptr) {
-    LOG(ERROR) << "bluetooth_hci_callback is null!";
+    LOG(ERROR) << "bluetooth_hci_callback is null! packet="
+               << packet.ToString();
     return;
   }
   HciPacketType type = packet.GetType();
   switch (type) {
     case HciPacketType::kEvent: {
-      DURATION_TRACKER(
+      SCOPED_ANCHOR(
           AnchorType::kCallbackHciEvent,
           (std::stringstream() << "BluetoothHciCallback->hciEventReceived: "
                                << packet.size() << " bytes")
@@ -205,7 +238,7 @@ void BluetoothHci::DispatchPacketToStack(const HalPacket& packet) {
       break;
     }
     case HciPacketType::kAclData: {
-      DURATION_TRACKER(
+      SCOPED_ANCHOR(
           AnchorType::kCallbackAclData,
           (std::stringstream() << "BluetoothHciCallback->aclDataReceived: "
                                << packet.size() << " bytes")
@@ -214,7 +247,7 @@ void BluetoothHci::DispatchPacketToStack(const HalPacket& packet) {
       break;
     }
     case HciPacketType::kScoData: {
-      DURATION_TRACKER(
+      SCOPED_ANCHOR(
           AnchorType::kCallbackScoData,
           (std::stringstream() << "BluetoothHciCallback->scoDataReceived: "
                                << packet.size() << " bytes")
@@ -223,7 +256,7 @@ void BluetoothHci::DispatchPacketToStack(const HalPacket& packet) {
       break;
     }
     case HciPacketType::kIsoData: {
-      DURATION_TRACKER(
+      SCOPED_ANCHOR(
           AnchorType::kCallbackIsoData,
           (std::stringstream() << "BluetoothHciCallback->isoDataReceived: "
                                << packet.size() << " bytes")
@@ -239,6 +272,7 @@ void BluetoothHci::DispatchPacketToStack(const HalPacket& packet) {
 
 void BluetoothHci::HandleHalStateChanged(HalState new_state,
                                          [[maybe_unused]] HalState old_state) {
+  std::lock_guard<std::mutex> lock(callback_mutex_);
   if (is_initializing_ && bluetooth_hci_callback_ != nullptr) {
     switch (new_state) {
       case HalState::kRunning:

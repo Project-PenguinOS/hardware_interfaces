@@ -104,12 +104,12 @@ class HalConfigLoader : public ConfigLoader {
   GetHwStagesWithoutLppControlBtPowerPin() const = 0;
 
   /**
-   * @brief Gets a list of hwardware stages that firmware does not support.
+   * @brief Gets a list of hwardware stages that bluetooth_hal does not support.
    *
    * @return A constant reference to a vector of strings containing unsupported
    * hardware stages.
    */
-  virtual const std::vector<std::string>& GetFwUnsupportedHwStages() const = 0;
+  virtual const std::vector<std::string>& GetUnsupportedHwStages() const = 0;
 
   /**
    * @brief Gets the minimum interval between two vendor transport crashes in
@@ -238,6 +238,13 @@ class HalConfigLoader : public ConfigLoader {
    * Bluetooth.
    */
   virtual const std::string& GetRfkillTypeBluetooth() const = 0;
+
+  /**
+   * @brief Checks whether enhanced packet validation is supported.
+   *
+   * @return true if supported; false otherwise.
+   */
+  virtual bool IsEnhancedPacketValidationSupported() const = 0;
 
   static HalConfigLoader& GetLoader();
 

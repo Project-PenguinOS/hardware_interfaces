@@ -114,6 +114,15 @@ std::vector<AudioPort> ModuleConfig::getAttachedDevicePorts() const {
     return result;
 }
 
+std::optional<AudioPort> ModuleConfig::getAttachedInputDevicePort() const {
+    for (const auto& port : mPorts) {
+        if (mAttachedSourceDevicePorts.count(port.id) != 0) {
+            return port;
+        }
+    }
+    return {};
+}
+
 std::vector<aidl::android::media::audio::common::AudioPort>
 ModuleConfig::getAudioPortsForDeviceTypes(const std::vector<AudioDeviceType>& deviceTypes,
                                           const std::string& connection) const {
@@ -180,6 +189,14 @@ std::vector<AudioPort> ModuleConfig::getNonBlockingMixPorts(bool connectedOnly,
     });
 }
 
+std::vector<AudioPort> ModuleConfig::getSynchronousMixPorts(bool connectedOnly,
+                                                            bool singlePort) const {
+    return findMixPorts(false /*isInput*/, connectedOnly, singlePort, [&](const AudioPort& port) {
+        return !isBitPositionFlagSet(port.flags.get<AudioIoFlags::Tag::output>(),
+                                     AudioOutputFlags::NON_BLOCKING);
+    });
+}
+
 std::vector<AudioPort> ModuleConfig::getOffloadMixPorts(bool connectedOnly, bool singlePort) const {
     return findMixPorts(false /*isInput*/, connectedOnly, singlePort, [&](const AudioPort& port) {
         if (isBitPositionFlagSet(port.flags.get<AudioIoFlags::Tag::output>(),
@@ -212,6 +229,20 @@ std::vector<AudioPort> ModuleConfig::getMmapMixPorts(bool isInput, bool connecte
     static const auto outputFlagMatcher = [&](const AudioPort& port) {
         return isBitPositionFlagSet(port.flags.get<AudioIoFlags::Tag::output>(),
                                     AudioOutputFlags::MMAP_NOIRQ);
+    };
+    return isInput ? findMixPorts(isInput, connectedOnly, singlePort, inputFlagMatcher)
+                   : findMixPorts(isInput, connectedOnly, singlePort, outputFlagMatcher);
+}
+
+std::vector<AudioPort> ModuleConfig::getNonMmapMixPorts(bool isInput, bool connectedOnly,
+                                                        bool singlePort) const {
+    static const auto inputFlagMatcher = [&](const AudioPort& port) {
+        return !isBitPositionFlagSet(port.flags.get<AudioIoFlags::Tag::input>(),
+                                     AudioInputFlags::MMAP_NOIRQ);
+    };
+    static const auto outputFlagMatcher = [&](const AudioPort& port) {
+        return !isBitPositionFlagSet(port.flags.get<AudioIoFlags::Tag::output>(),
+                                     AudioOutputFlags::MMAP_NOIRQ);
     };
     return isInput ? findMixPorts(isInput, connectedOnly, singlePort, inputFlagMatcher)
                    : findMixPorts(isInput, connectedOnly, singlePort, outputFlagMatcher);

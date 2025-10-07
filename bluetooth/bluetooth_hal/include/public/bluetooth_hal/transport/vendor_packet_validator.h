@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 The Android Open Source Project
+ * Copyright 2025 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,17 +16,19 @@
 
 #pragma once
 
-#include "aidl/android/hardware/bluetooth/ranging/ChannelSoudingRawData.h"
+#include <cstdint>
+#include <span>
 
-using ::aidl::android::hardware::bluetooth::ranging::ChannelSoudingRawData;
+namespace bluetooth_hal {
+namespace transport {
 
-class ChannelSoundingAlgorithm {
+class VendorPacketValidator {
  public:
-  void reset_variables() {};
+  VendorPacketValidator() = default;
+  ~VendorPacketValidator() = default;
 
-  double estimate_distance([[maybe_unused]] const ChannelSoudingRawData&) {
-    return 0;
-  }
-
-  double get_confidence_level() { return 0; }
+  bool IsValidVendorSpecificEvent(std::span<const uint8_t> data) const;
 };
+
+}  // namespace transport
+}  // namespace bluetooth_hal

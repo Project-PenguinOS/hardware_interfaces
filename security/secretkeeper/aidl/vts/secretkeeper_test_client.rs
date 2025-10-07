@@ -79,8 +79,10 @@ const SECRET_EXAMPLE: Secret = Secret([
 // Note that this is the identity of the `default` instance (and not `nonsecure`)!
 fn get_secretkeeper_identity(instance: &str) -> Option<CoseKey> {
     let sk = get_connection(instance);
-    let key_material = if sk.getInterfaceVersion().expect("Error getting sk interface version") >= 2 {
-        let PublicKey { keyMaterial } = sk.getSecretkeeperIdentity().expect("Error calling getSecretkeeperIdentity");
+    let key_material = if sk.getInterfaceVersion().expect("Error getting sk interface version") >= 2
+    {
+        let PublicKey { keyMaterial } =
+            sk.getSecretkeeperIdentity().expect("Error calling getSecretkeeperIdentity");
         Some(keyMaterial)
     } else {
         let path = Path::new(SECRETKEEPER_KEY_HOST_DT);
@@ -93,7 +95,8 @@ fn get_secretkeeper_identity(instance: &str) -> Option<CoseKey> {
     };
 
     key_material.map(|km| {
-        let mut cose_key = CoseKey::from_slice(&km).expect("Error deserializing CoseKey from key material");
+        let mut cose_key =
+            CoseKey::from_slice(&km).expect("Error deserializing CoseKey from key material");
         cose_key.canonicalize(CborOrdering::Lexicographic);
         cose_key
     })
@@ -219,10 +222,13 @@ impl SkClient {
         let store_response = self.secret_management_request(&store_request)?;
         let store_response = ResponsePacket::from_slice(&store_response)?;
 
-        assert_eq!(store_response.response_type()?, ResponseType::Success);
-        // Really just checking that the response is indeed StoreSecretResponse
-        let _ = StoreSecretResponse::deserialize_from_packet(store_response)?;
-        Ok(())
+        if store_response.response_type()? == ResponseType::Success {
+            let _ = *StoreSecretResponse::deserialize_from_packet(store_response)?;
+            Ok(())
+        } else {
+            let err = *SecretkeeperError::deserialize_from_packet(store_response)?;
+            Err(Error::SecretkeeperError(err))
+        }
     }
 
     /// Helper method to get a secret.
@@ -261,6 +267,13 @@ impl SkClient {
     fn delete_all(&self) {
         self.sk.deleteAll().unwrap();
     }
+}
+
+/// Helper method to delete secrets.
+fn delete_sk_ids(instance: &str, ids: &[&Id]) {
+    let sk = get_connection(instance);
+    let ids: Vec<SecretId> = ids.iter().map(|id| SecretId { id: id.0 }).collect();
+    sk.deleteIds(&ids).unwrap();
 }
 
 #[derive(Debug)]
@@ -614,10 +627,16 @@ fn secretkeeper_many_sessions_parallel(instance: String) {
             let _result = use_sk_may_fail(instance, idx);
         }));
     }
-
     // Wait for all activity to quiesce.
     for handle in handles {
         let _result = handle.join();
+    }
+
+    // Remove any IDs that might have been stored in the test.
+    for idx in 0..SESSION_COUNT {
+        let mut id = ID_EXAMPLE.clone();
+        id.0[0] = idx as u8;
+        delete_sk_ids(&instance, &[&id]);
     }
 
     // Now that all the parallel activity is done, should still be able to interact with
@@ -625,13 +644,6 @@ fn secretkeeper_many_sessions_parallel(instance: String) {
     let mut sk_client = SkClient::new(&instance).unwrap();
     sk_client.store(&ID_EXAMPLE, &SECRET_EXAMPLE).unwrap();
     assert_eq!(sk_client.get(&ID_EXAMPLE).unwrap(), SECRET_EXAMPLE);
-
-    // Remove any IDs that might have been stored in the test.
-    for idx in 0..SESSION_COUNT {
-        let mut id = ID_EXAMPLE.clone();
-        id.0[0] = idx as u8;
-        sk_client.delete(&[&id]);
-    }
 }
 
 fn use_sk_may_fail(instance: String, idx: usize) -> Result<(), Error> {

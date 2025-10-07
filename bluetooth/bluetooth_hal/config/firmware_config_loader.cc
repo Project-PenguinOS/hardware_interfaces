@@ -38,6 +38,7 @@
 #include "bluetooth_hal/config/config_constants.h"
 #include "bluetooth_hal/config/hal_config_loader.h"
 #include "bluetooth_hal/hal_types.h"
+#include "bluetooth_hal/transport/transport_interface.h"
 #include "bluetooth_hal/util/system_call_wrapper.h"
 #include "firmware_config.pb.h"
 #include "google/protobuf/util/json_util.h"
@@ -49,13 +50,13 @@ namespace {
 using ::bluetooth_hal::config::proto::FirmwareConfigForTransport;
 using ::bluetooth_hal::config::proto::FirmwareConfigsContainer;
 using ::bluetooth_hal::hci::HciPacketType;
+using ::bluetooth_hal::transport::TransportInterface;
 using ::bluetooth_hal::transport::TransportType;
 using ::bluetooth_hal::util::SystemCallWrapper;
 
 using ::google::protobuf::RepeatedField;
 using ::google::protobuf::util::JsonParseOptions;
 using ::google::protobuf::util::JsonStringToMessage;
-using ::google::protobuf::util::Status;
 
 namespace cfg_consts = ::bluetooth_hal::config::constants;
 
@@ -99,6 +100,7 @@ class FirmwareConfigLoaderImpl : public FirmwareConfigLoader {
 
   int GetLoadMiniDrvDelayMs() const override;
   int GetLaunchRamDelayMs() const override;
+  size_t GetFirmwareFileCount() const override;
 
   std::string DumpConfigToString() const override;
 
@@ -259,6 +261,13 @@ int FirmwareConfigLoaderImpl::GetLaunchRamDelayMs() const {
              : cfg_consts::kDefaultLaunchRamDelayMs;
 }
 
+size_t FirmwareConfigLoaderImpl::GetFirmwareFileCount() const {
+  if (!active_config_) {
+    return 0;
+  }
+  return current_firmware_filenames_.size();
+}
+
 std::string FirmwareConfigLoaderImpl::DumpConfigToString() const {
   std::stringstream ss;
   ss << "--- FirmwareConfigLoaderImpl State ---\n";
@@ -352,7 +361,7 @@ bool FirmwareConfigLoaderImpl::LoadConfigFromString(std::string_view content) {
   JsonParseOptions options;
   options.ignore_unknown_fields = true;
 
-  Status status = JsonStringToMessage(content, &container, options);
+  auto status = JsonStringToMessage(content, &container, options);
   if (!status.ok()) {
     LOG(ERROR) << __func__
                << ": Failed to parse json file, error: " << status.message();
@@ -365,13 +374,19 @@ bool FirmwareConfigLoaderImpl::LoadConfigFromString(std::string_view content) {
     transport_specific_configs_[type] = config_entry;
   }
 
-  const auto& transport_type_priorities =
-      HalConfigLoader::GetLoader().GetTransportTypePriority();
-  for (auto& type : transport_type_priorities) {
-    if (transport_specific_configs_.find(type) !=
-        transport_specific_configs_.end()) {
-      SelectFirmwareConfiguration(type);
-      break;
+  const TransportType active_transport_type =
+      TransportInterface::GetTransportType();
+  if (active_transport_type != TransportType::kUnknown) {
+    SelectFirmwareConfiguration(active_transport_type);
+  } else {
+    const auto& transport_type_priorities =
+        HalConfigLoader::GetLoader().GetTransportTypePriority();
+    for (auto type : transport_type_priorities) {
+      if (transport_specific_configs_.find(type) !=
+          transport_specific_configs_.end()) {
+        SelectFirmwareConfiguration(type);
+        break;
+      }
     }
   }
 
@@ -478,9 +493,6 @@ void FirmwareConfigLoaderImpl::LoadSetupCommandsFromConfig(
   if (commands.hci_download_minidrv_size()) {
     add(SetupCommandType::kDownloadMinidrv, commands.hci_download_minidrv());
   }
-  if (commands.hci_vsc_launch_ram_size()) {
-    add(SetupCommandType::kLaunchRam, commands.hci_vsc_launch_ram());
-  }
   if (commands.hci_read_fw_version_size()) {
     add(SetupCommandType::kReadFwVersion, commands.hci_read_fw_version());
   }
@@ -537,22 +549,15 @@ std::optional<DataPacket> FirmwareConfigLoaderImpl::GetNextPacketByCommand() {
     }
 
     bool is_launch_ram = (GetOpcode(std::span(header)) == launch_ram_opcode_);
-    bool is_last_file = (static_cast<size_t>(current_firmware_file_index_) ==
-                         current_firmware_filenames_.size() - 1);
 
     DataType packet_data_type = DataType::kDataFragment;
     if (is_launch_ram) {
       LOG(INFO) << __func__ << ": Launch RAM command found in file "
                 << current_firmware_filenames_[current_firmware_file_index_];
       // This launch_ram packet is the end of the current file.
-      // Close fd now, so next call to GetNextFirmwareData will try
-      // OpenNextFirmwareFile.
       SystemCallWrapper::GetWrapper().Close(firmware_file_fd_);
       firmware_file_fd_ = -1;
-      if (is_last_file) {
-        LOG(INFO) << __func__ << " This is the last firmware file.";
-        packet_data_type = DataType::kDataEnd;
-      }
+      packet_data_type = DataType::kDataEnd;
     }
 
     return DataPacket(packet_data_type, packet_payload);
@@ -586,11 +591,7 @@ std::optional<DataPacket> FirmwareConfigLoaderImpl::GetNextPacketByFixedSize() {
   if (is_end_of_current_file) {
     SystemCallWrapper::GetWrapper().Close(firmware_file_fd_);
     firmware_file_fd_ = -1;
-    bool is_last_file = (static_cast<size_t>(current_firmware_file_index_) ==
-                         current_firmware_filenames_.size() - 1);
-    return DataPacket(
-        is_last_file ? DataType::kDataEnd : DataType::kDataFragment,
-        std::move(buffer));
+    return DataPacket(DataType::kDataEnd, std::move(buffer));
   }
 
   return DataPacket(DataType::kDataFragment, std::move(buffer));
@@ -614,11 +615,7 @@ FirmwareConfigLoaderImpl::GetNextFirmwareDataByAccumulation() {
   accumulated_buffer.reserve(kBufferSize);
 
   if (previous_packet_.has_value()) {
-    // Check if it is the end of the packet.
-    if (previous_packet_->GetPayload().GetCommandOpcode() ==
-            launch_ram_opcode_ ||
-        previous_packet_->GetDataType() == DataType::kDataEnd) {
-      // If the previous packet was the end, just return it.
+    if (previous_packet_->GetDataType() == DataType::kDataEnd) {
       DataPacket result = std::move(previous_packet_.value());
       previous_packet_.reset();
       return result;
@@ -627,7 +624,6 @@ FirmwareConfigLoaderImpl::GetNextFirmwareDataByAccumulation() {
     accumulated_buffer.insert(accumulated_buffer.end(),
                               previous_packet_->GetPayload().begin(),
                               previous_packet_->GetPayload().end());
-
     previous_packet_.reset();
   }
 
@@ -638,38 +634,26 @@ FirmwareConfigLoaderImpl::GetNextFirmwareDataByAccumulation() {
       break;
     }
 
-    // Check if adding this packet would exceed the buffer size.
-    // Or if this is a kDataEnd / launch ram packet and we already have some
-    // data.
-    bool is_launch_ram_or_end_of_file =
-        next_packet->GetPayload().GetCommandOpcode() == launch_ram_opcode_ ||
-        (next_packet->GetDataType() == DataType::kDataEnd);
-
-    if ((is_launch_ram_or_end_of_file && !accumulated_buffer.empty()) ||
+    if ((next_packet->GetDataType() == DataType::kDataEnd &&
+         !accumulated_buffer.empty()) ||
         (accumulated_buffer.size() + next_packet->GetPayload().size() >
          kBufferSize)) {
       previous_packet_ = std::move(next_packet);
       break;
     }
 
+    if (next_packet->GetDataType() == DataType::kDataEnd) {
+      return DataPacket(DataType::kDataEnd,
+                        std::move(next_packet->GetPayload()));
+    }
+
     accumulated_buffer.insert(accumulated_buffer.end(),
                               next_packet->GetPayload().begin(),
                               next_packet->GetPayload().end());
-
-    if (next_packet->GetDataType() == DataType::kDataEnd) {
-      break;
-    }
   }
 
   if (!accumulated_buffer.empty()) {
-    bool is_final_packet_of_all_files =
-        !previous_packet_.has_value() &&
-        (accumulated_buffer.size() > 0 && firmware_file_fd_ == -1 &&
-         static_cast<size_t>(current_firmware_file_index_) ==
-             current_firmware_filenames_.size() - 1);
-    return DataPacket(is_final_packet_of_all_files ? DataType::kDataEnd
-                                                   : DataType::kDataFragment,
-                      std::move(accumulated_buffer));
+    return DataPacket(DataType::kDataFragment, std::move(accumulated_buffer));
   }
 
   return std::nullopt;
