@@ -19,6 +19,7 @@
 #include "bluetooth_hal/chip/chip_provisioner.h"
 
 #include <chrono>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <future>
@@ -143,8 +144,11 @@ bool ChipProvisioner::ResetFirmware() {
 
       // Step 1: Reset the Bluetooth controller.
       if (!ExecuteCurrentSetupStep(SetupCommandType::kReset)) {
-        LOG(FATAL) << __func__
+        // It could be because of the lower layer transports are disabled during
+        // device shutdown. Restart the HAL here to prevent false negative.
+        LOG(ERROR) << __func__
                    << ": Failed to reset firmware when turning OFF BT.";
+        kill(getpid(), SIGKILL);
       }
       break;
     default:
