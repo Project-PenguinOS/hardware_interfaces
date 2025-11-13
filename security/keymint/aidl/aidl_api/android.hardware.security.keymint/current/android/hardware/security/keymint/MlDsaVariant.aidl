@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022 The Android Open Source Project
+ * Copyright (C) 2020 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,46 +31,10 @@
 // with such a backward incompatible change, it has a high risk of breaking
 // later when a module using the interface is updated, e.g., Mainline modules.
 
-package android.hardware.wifi;
-@VintfStability
-parcelable RttResult {
-  byte[6] addr;
-  int burstNum;
-  int measurementNumber;
-  int successNumber;
-  byte numberPerBurstPeer;
-  android.hardware.wifi.RttStatus status;
-  byte retryAfterDuration;
-  android.hardware.wifi.RttType type;
-  int rssi;
-  int rssiSpread;
-  android.hardware.wifi.WifiRateInfo txRate;
-  android.hardware.wifi.WifiRateInfo rxRate;
-  long rtt;
-  long rttSd;
-  long rttSpread;
-  int distanceInMm;
-  int distanceSdInMm;
-  int distanceSpreadInMm;
-  long timeStampInUs;
-  int burstDurationInMs;
-  int negotiatedBurstNum;
-  android.hardware.wifi.WifiInformationElement lci;
-  android.hardware.wifi.WifiInformationElement lcr;
-  int channelFreqMHz;
-  android.hardware.wifi.RttBw packetBw;
-  byte i2rTxLtfRepetitionCount;
-  byte r2iTxLtfRepetitionCount;
-  long ntbMinMeasurementTime;
-  long ntbMaxMeasurementTime;
-  byte numTxSpatialStreams;
-  byte numRxSpatialStreams;
-  @nullable android.hardware.wifi.common.OuiKeyedData[] vendorData;
-  boolean isRangingFrameProtectionEnabled;
-  boolean isSecureLtfEnabled;
-  long baseAkm;
-  long cipherSuite;
-  int secureHeLtfProtocolVersion;
-  long pasnComebackAfterMillis;
-  @nullable byte[] pasnComebackCookie;
+package android.hardware.security.keymint;
+/* @hide */
+@Backing(type="int") @VintfStability
+enum MlDsaVariant {
+  ML_DSA_65 = 1,
+  ML_DSA_87 = 2,
 }
