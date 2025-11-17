@@ -257,7 +257,7 @@
     </hal>
     <hal format="aidl">
         <name>android.hardware.graphics.composer3</name>
-        <version>4</version>
+        <version>4-5</version>
         <interface>
             <name>IComposer</name>
             <instance>default</instance>
@@ -343,6 +343,14 @@
             <name>IRemotelyProvisionedComponent</name>
             <instance>default</instance>
             <instance>strongbox</instance>
+        </interface>
+    </hal>
+    <hal format="aidl">
+        <name>android.hardware.security.factory_reset_protection</name>
+        <version>1</version>
+        <interface>
+            <name>IFactoryResetProtection</name>
+            <instance>default</instance>
         </interface>
     </hal>
     <hal format="aidl">

@@ -1,11 +1,11 @@
-/**
- * Copyright (c) 2021, The Android Open Source Project
+/*
+ * Copyright (C) 2025 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -31,21 +31,20 @@
 // with such a backward incompatible change, it has a high risk of breaking
 // later when a module using the interface is updated, e.g., Mainline modules.
 
-package android.hardware.graphics.composer3;
+package android.hardware.security.factory_reset_protection;
 @VintfStability
-parcelable DisplayCommand {
-  long display;
-  android.hardware.graphics.composer3.LayerCommand[] layers;
-  @nullable float[] colorTransformMatrix;
-  @nullable android.hardware.graphics.composer3.DisplayBrightness brightness;
-  @nullable android.hardware.graphics.composer3.ClientTarget clientTarget;
-  @nullable android.hardware.graphics.composer3.Buffer virtualDisplayOutputBuffer;
-  @nullable android.hardware.graphics.composer3.ClockMonotonicTimestamp expectedPresentTime;
-  boolean validateDisplay;
-  boolean acceptDisplayChanges;
-  boolean presentDisplay;
-  boolean presentOrValidateDisplay;
-  int frameIntervalNs;
-  long pictureProfileId;
-  @nullable android.hardware.graphics.composer3.ActiveConfigCommand activeConfig;
+interface IFactoryResetProtection {
+  boolean isActive();
+  void activate();
+  boolean deactivate(in byte[32] candidateSecret);
+  void setSecret(in byte[32] newSecret);
+  byte[32] getSecret();
+  void storeData(in String key, in byte[] value);
+  byte[] retrieveData(in String key);
+  void deleteData(in String key);
+  void deleteAllData();
+  const int STATUS_FAILED = 1;
+  const int STATUS_FRP_IS_ACTIVE = 2;
+  const int STATUS_ILLEGAL_ARGUMENT = 3;
+  const int STATUS_UNSUPPORTED = 4;
 }
