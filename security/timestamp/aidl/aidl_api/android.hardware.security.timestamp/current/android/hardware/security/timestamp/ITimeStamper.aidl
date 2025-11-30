@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022 The Android Open Source Project
+ * Copyright (C) 2025 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,20 +31,8 @@
 // with such a backward incompatible change, it has a high risk of breaking
 // later when a module using the interface is updated, e.g., Mainline modules.
 
-package android.hardware.camera.device;
+package android.hardware.security.timestamp;
 @VintfStability
-interface ICameraDevice {
-  android.hardware.camera.device.CameraMetadata getCameraCharacteristics();
-  android.hardware.camera.device.CameraMetadata getPhysicalCameraCharacteristics(in String physicalCameraId);
-  android.hardware.camera.common.CameraResourceCost getResourceCost();
-  boolean isStreamCombinationSupported(in android.hardware.camera.device.StreamConfiguration streams);
-  android.hardware.camera.device.ICameraDeviceSession open(in android.hardware.camera.device.ICameraDeviceCallback callback);
-  android.hardware.camera.device.ICameraInjectionSession openInjectionSession(in android.hardware.camera.device.ICameraDeviceCallback callback);
-  void setTorchMode(boolean on);
-  void turnOnTorchWithStrengthLevel(int torchStrength);
-  int getTorchStrengthLevel();
-  android.hardware.camera.device.CameraMetadata constructDefaultRequestSettings(in android.hardware.camera.device.RequestTemplate type);
-  boolean isStreamCombinationWithSettingsSupported(in android.hardware.camera.device.StreamConfiguration streams);
-  android.hardware.camera.device.CameraMetadata getSessionCharacteristics(in android.hardware.camera.device.StreamConfiguration sessionConfig);
-  oneway void warmUp();
+interface ITimeStamper {
+  byte[] createRfc3161TimestampToken(in android.hardware.security.timestamp.TimeStampReq timestampReq);
 }
