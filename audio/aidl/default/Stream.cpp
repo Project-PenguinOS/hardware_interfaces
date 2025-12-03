@@ -18,8 +18,8 @@
 
 #define ATRACE_TAG ATRACE_TAG_AUDIO
 #define LOG_TAG "AHAL_Stream"
+#include <Log.h>
 #include <Utils.h>
-#include <android-base/logging.h>
 #include <android/binder_ibinder_platform.h>
 #include <cutils/properties.h>
 #include <utils/SystemClock.h>
@@ -448,7 +448,7 @@ void StreamOutWorkerLogic::onClipStateChange(size_t clipFramesLeft, bool hasNext
         mDrainState = DrainState::NONE;
         if ((drainState == DrainState::ALL || drainState == DrainState::EN_SENT) &&
             asyncCallback != nullptr) {
-            LOG(DEBUG) << __func__ << ": sending onDrainReady";
+            LOG(DEBUG) << __func__ << ": sending onDrainReady (end of clip)";
             // For EN_SENT, this is the second onDrainReady which notifies about clip transition.
             ndk::ScopedAStatus status = asyncCallback->onDrainReady();
             if (!status.isOk()) {
@@ -459,7 +459,7 @@ void StreamOutWorkerLogic::onClipStateChange(size_t clipFramesLeft, bool hasNext
         // The stream state does not change, it is still draining.
         mDrainState = DrainState::EN_SENT;
         if (asyncCallback != nullptr) {
-            LOG(DEBUG) << __func__ << ": sending onDrainReady";
+            LOG(DEBUG) << __func__ << ": sending onDrainReady (ready for next clip data)";
             ndk::ScopedAStatus status = asyncCallback->onDrainReady();
             if (!status.isOk()) {
                 LOG(ERROR) << __func__ << ": error from onDrainReady: " << status;
@@ -704,8 +704,9 @@ bool StreamOutWorkerLogic::write(size_t clientSize, StreamDescriptor::Reply* rep
                      << " succeeded; connected? " << isConnected;
         // Amount of data that the HAL module is going to actually use.
         size_t byteCount = std::min({clientSize, readByteCount, mDataBufferSize});
-        if (byteCount >= frameSize && mContext->getForceTransientBurst()) {
-            // In order to prevent the state machine from going to ACTIVE state,
+        if (byteCount >= frameSize && mContext->getForceTransientBurst() &&
+            !mContext->getAsyncCallback()) {
+            // In order to prevent the state machine from going to ACTIVE state for sync transfers,
             // simulate partial write.
             byteCount -= frameSize;
         }

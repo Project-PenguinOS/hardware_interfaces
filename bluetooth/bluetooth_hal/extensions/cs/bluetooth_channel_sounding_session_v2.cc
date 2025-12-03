@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 The Android Open Source Project
+ * Copyright 2025 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-#define LOG_TAG "bluetooth_hal.extensions.cs"
+#define LOG_TAG "bluetooth_hal.extensions.cs.v2"
 
-#include "bluetooth_hal/extensions/cs/bluetooth_channel_sounding_session.h"
+#include "bluetooth_hal/extensions/cs/bluetooth_channel_sounding_session_v2.h"
 
 #include <cstdint>
 #include <memory>
@@ -24,7 +24,10 @@
 #include <vector>
 
 #include "aidl/android/hardware/bluetooth/ranging/ChannelSoudingRawData.h"
+#include "aidl/android/hardware/bluetooth/ranging/ChannelSoundingProcedureData.h"
+#include "aidl/android/hardware/bluetooth/ranging/Config.h"
 #include "aidl/android/hardware/bluetooth/ranging/IBluetoothChannelSoundingSessionCallback.h"
+#include "aidl/android/hardware/bluetooth/ranging/ProcedureEnableConfig.h"
 #include "aidl/android/hardware/bluetooth/ranging/RangingResult.h"
 #include "aidl/android/hardware/bluetooth/ranging/Reason.h"
 #include "aidl/android/hardware/bluetooth/ranging/ResultType.h"
@@ -34,6 +37,7 @@
 #include "android/binder_auto_utils.h"
 #include "bluetooth_hal/extensions/cs/bluetooth_channel_sounding_distance_estimator.h"
 #include "bluetooth_hal/extensions/cs/bluetooth_channel_sounding_distance_estimator_interface.h"
+#include "bluetooth_hal/extensions/cs/bluetooth_channel_sounding_session_interface.h"
 #include "bluetooth_hal/extensions/cs/bluetooth_channel_sounding_util.h"
 #include "bluetooth_hal/hal_types.h"
 
@@ -43,26 +47,27 @@ namespace cs {
 
 using ::aidl::android::hardware::bluetooth::ranging::ChannelSoudingRawData;
 using ::aidl::android::hardware::bluetooth::ranging::
+    ChannelSoundingProcedureData;
+using ::aidl::android::hardware::bluetooth::ranging::Config;
+using ::aidl::android::hardware::bluetooth::ranging::
     IBluetoothChannelSoundingSessionCallback;
+using ::aidl::android::hardware::bluetooth::ranging::ProcedureEnableConfig;
 using ::aidl::android::hardware::bluetooth::ranging::RangingResult;
 using ::aidl::android::hardware::bluetooth::ranging::Reason;
 using ::aidl::android::hardware::bluetooth::ranging::ResultType;
 using ::aidl::android::hardware::bluetooth::ranging::VendorSpecificData;
-
-using ::android::base::GetBoolProperty;
 using ::android::base::GetUintProperty;
 using ::bluetooth_hal::Property;
-
 using ::ndk::ScopedAStatus;
 
-BluetoothChannelSoundingSession::BluetoothChannelSoundingSession(
+BluetoothChannelSoundingSessionV2::BluetoothChannelSoundingSessionV2(
     std::shared_ptr<IBluetoothChannelSoundingSessionCallback> callback,
     Reason /* reason */)
     : distance_estimator_(ChannelSoundingDistanceEstimatorInterface::Create()) {
   callback_ = callback;
 }
 
-ScopedAStatus BluetoothChannelSoundingSession::getVendorSpecificReplies(
+ScopedAStatus BluetoothChannelSoundingSessionV2::getVendorSpecificReplies(
     std::optional<std::vector<std::optional<VendorSpecificData>>>*
         _aidl_return) {
   LOG(INFO) << __func__;
@@ -107,22 +112,36 @@ ScopedAStatus BluetoothChannelSoundingSession::getVendorSpecificReplies(
   }
 
   return ScopedAStatus::ok();
-}
+};
 
-ScopedAStatus BluetoothChannelSoundingSession::getSupportedResultTypes(
+ScopedAStatus BluetoothChannelSoundingSessionV2::getSupportedResultTypes(
     std::vector<ResultType>* _aidl_return) {
   std::vector<ResultType> supported_result_types = {ResultType::RESULT_METERS};
   *_aidl_return = supported_result_types;
-  return ScopedAStatus::ok();
-}
 
-ScopedAStatus BluetoothChannelSoundingSession::isAbortedProcedureRequired(
+  return ScopedAStatus::ok();
+};
+
+ScopedAStatus BluetoothChannelSoundingSessionV2::isAbortedProcedureRequired(
     bool* _aidl_return) {
   *_aidl_return = false;
-  return ScopedAStatus::ok();
-}
 
-ScopedAStatus BluetoothChannelSoundingSession::writeRawData(
+  return ScopedAStatus::ok();
+};
+
+ScopedAStatus BluetoothChannelSoundingSessionV2::writeProcedureData(
+    const ChannelSoundingProcedureData& in_procedureData) {
+  RangingResult ranging_result;
+  distance_estimator_->ResetVariables();
+  ranging_result.resultMeters =
+      distance_estimator_->EstimateDistance(in_procedureData);
+  ranging_result.confidenceLevel =
+      distance_estimator_->GetConfidenceLevel() * 100;
+  callback_->onResult(ranging_result);
+  return ScopedAStatus::ok();
+};
+
+ScopedAStatus BluetoothChannelSoundingSessionV2::writeRawData(
     const ChannelSoudingRawData& in_rawData) {
   if (in_rawData.stepChannels.empty()) {
     LOG(WARNING) << __func__ << " in_rawData.stepChannels is empty, skip";
@@ -139,12 +158,28 @@ ScopedAStatus BluetoothChannelSoundingSession::writeRawData(
   return ScopedAStatus::ok();
 }
 
-ScopedAStatus BluetoothChannelSoundingSession::close(Reason in_reason) {
+ScopedAStatus BluetoothChannelSoundingSessionV2::close(Reason in_reason) {
   callback_->onClose(in_reason);
-  return ScopedAStatus::ok();
-}
 
-void BluetoothChannelSoundingSession::HandleVendorSpecificData(
+  return ScopedAStatus::ok();
+};
+
+ScopedAStatus BluetoothChannelSoundingSessionV2::updateChannelSoundingConfig(
+    [[maybe_unused]] const Config& in_config) {
+  return ScopedAStatus::ok();
+};
+
+ScopedAStatus BluetoothChannelSoundingSessionV2::updateProcedureEnableConfig(
+    [[maybe_unused]] const ProcedureEnableConfig& in_procedureEnableConfig) {
+  return ScopedAStatus::ok();
+};
+
+ScopedAStatus BluetoothChannelSoundingSessionV2::updateBleConnInterval(
+    [[maybe_unused]] int in_bleConnInterval) {
+  return ScopedAStatus::ok();
+};
+
+void BluetoothChannelSoundingSessionV2::HandleVendorSpecificData(
     const std::optional<std::vector<std::optional<VendorSpecificData>>>
         vendor_specific_data) {
   uuid_matched_ = IsUuidMatched(vendor_specific_data);
@@ -175,15 +210,15 @@ void BluetoothChannelSoundingSession::HandleVendorSpecificData(
     LOG(INFO) << __func__ << ": Do not support mode 0 Channel Map.";
     enable_mode_0_channel_map_ = false;
   }
-}
+};
 
-bool BluetoothChannelSoundingSession::ShouldEnableFakeNotification() {
+bool BluetoothChannelSoundingSessionV2::ShouldEnableFakeNotification() {
   return enable_fake_notification_;
-}
+};
 
-bool BluetoothChannelSoundingSession::ShouldEnableMode0ChannelMap() {
+bool BluetoothChannelSoundingSessionV2::ShouldEnableMode0ChannelMap() {
   return enable_mode_0_channel_map_;
-}
+};
 
 }  // namespace cs
 }  // namespace extensions

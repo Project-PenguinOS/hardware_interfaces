@@ -1381,18 +1381,19 @@ class StreamWriterLogic : public StreamCommonLogic {
             return Status::ABORT;
         }
         if (actualSize > 0) {
-            if (command.getTag() == StreamDescriptor::Command::burst) {
-                if (!isCompressOffload()) {
-                    fillData(mBurstIteration);
-                    if (mBurstIteration < std::numeric_limits<int8_t>::max()) {
-                        mBurstIteration++;
-                    } else {
-                        mBurstIteration = 0;
-                    }
+            // It's the 'burst' command.
+            if (!isCompressOffload()) {
+                fillData(mBurstIteration);
+                if (mBurstIteration < std::numeric_limits<int8_t>::max()) {
+                    mBurstIteration++;
                 } else {
-                    fillData(0);
-                    size_t size = std::min(static_cast<size_t>(actualSize),
-                                           mCompressedMediaSize - mCompressedMediaPos);
+                    mBurstIteration = 0;
+                }
+            } else {
+                fillData(0);
+                size_t size = std::min(static_cast<size_t>(actualSize),
+                                       mCompressedMediaSize - mCompressedMediaPos);
+                if (size > 0) {
                     loadData(mCompressedMedia, &size);
                     if (!mCompressedMedia.good()) {
                         LOG(ERROR) << __func__ << ": read failed";
@@ -1401,11 +1402,12 @@ class StreamWriterLogic : public StreamCommonLogic {
                     LOG(DEBUG) << __func__ << ": read from file " << size << " bytes";
                     mCompressedMediaPos += size;
                     if (mCompressedMediaPos >= mCompressedMediaSize) {
-                        mCompressedMedia.seekg(0, mCompressedMedia.beg);
-                        mCompressedMediaPos = 0;
-                        LOG(DEBUG) << __func__ << ": rewound to the beginning of the file";
+                        mCompressedMediaPos = mCompressedMediaSize;
                     }
+                } else {
+                    LOG(DEBUG) << __func__ << ": ran out of compressed data in the media file";
                 }
+                command.get<StreamDescriptor::Command::Tag::burst>() = size;
             }
             if (isMmapped() ? !writeDataToMmap() : !writeDataToMQ()) {
                 return Status::ABORT;
@@ -1415,6 +1417,13 @@ class StreamWriterLogic : public StreamCommonLogic {
                 command.get<StreamDescriptor::Command::Tag::burst>() = 0;
             }
             registerBurstNow();
+        }
+        if (isCompressOffload() && mCompressedMediaPos >= mCompressedMediaSize &&
+            (command.getTag() == StreamDescriptor::Command::Tag::flush ||
+             command.getTag() == StreamDescriptor::Command::Tag::drain)) {
+            mCompressedMedia.seekg(0, mCompressedMedia.beg);
+            mCompressedMediaPos = 0;
+            LOG(DEBUG) << __func__ << ": rewound to the beginning of the media file";
         }
         LOG(DEBUG) << "Writing command: " << command.toString();
         if (!getCommandMQ()->writeBlocking(&command, 1)) {
@@ -1872,6 +1881,57 @@ class WithAudioPatch {
     AudioPatch mPatch;
 };
 
+using DeviceKey = std::pair<AudioDevice, std::string /*encoding*/>;
+class AudioCoreModuleDeviceFormats : public ::testing::Test {
+  protected:
+    void SetUp() override { mModuleNames = getAidlHalInstanceNames(IModule::descriptor); }
+
+    AudioHalBinderServiceUtil mBinderUtil;
+    std::vector<std::string> mModuleNames;
+};
+
+TEST_F(AudioCoreModuleDeviceFormats, CheckDeviceFormatUniquenessAcrossModules) {
+    std::map<DeviceKey, std::string /*module name*/> deviceEncodings;
+
+    for (const auto& moduleName : mModuleNames) {
+        const std::shared_ptr<IModule>& module =
+                IModule::fromBinder(mBinderUtil.connectToService(moduleName));
+        std::vector<AudioPort> ports;
+        ASSERT_IS_OK(module->getAudioPorts(&ports));
+        for (const auto& port : ports) {
+            if (port.ext.getTag() != AudioPortExt::Tag::device) continue;
+            const AudioPortDeviceExt& deviceExt = port.ext.get<AudioPortExt::Tag::device>();
+            const AudioDevice& device = deviceExt.device;
+
+            // Skipping the check for IN_HEADSET type device port as its encodings are not specified
+            // because they are derived from corresponding OUT_HEADSET. CheckDevicePorts verifies
+            // that there is actually a matching OUT_HEADSET.
+            if (device.type.type == AudioDeviceType::IN_HEADSET) {
+                continue;
+            }
+
+            if (deviceExt.encodedFormats.empty()) {
+                // Ensure that there is at most one fallback port across all HAL modules for each
+                // DeviceKey.
+                DeviceKey key = std::make_pair(device, "");
+                auto [it, inserted] = deviceEncodings.insert({key, moduleName});
+                EXPECT_TRUE(inserted) << "Multiple fallback ports for device " << device.toString()
+                                      << " found in " << it->second << " and " << moduleName;
+            } else {
+                // Ensure that encoded formats are unique across all HAL modules
+                for (const auto& format : deviceExt.encodedFormats) {
+                    DeviceKey key = std::make_pair(device, format.encoding);
+                    auto [it, inserted] = deviceEncodings.insert({key, moduleName});
+                    EXPECT_TRUE(inserted)
+                            << "Duplicate encoding " << format.encoding << " for device "
+                            << device.toString() << " found in modules " << it->second << " and "
+                            << moduleName;
+                }
+            }
+        }
+    }
+}
+
 TEST_P(AudioCoreModule, Published) {
     // SetUp must complete with no failures.
 }
@@ -2005,6 +2065,16 @@ TEST_P(AudioCoreModule, CheckDevicePorts) {
             EXPECT_EQ(AudioChannelLayout::Tag::layoutMask, speakerLayoutTag)
                     << "If set, speaker layout must be layoutMask.  Received: "
                     << toString(speakerLayoutTag);
+        }
+    }
+
+    for (const auto& eachInputDevice : inputs) {
+        if (eachInputDevice.type.type == AudioDeviceType::IN_HEADSET) {
+            AudioDevice outputDevice = eachInputDevice;
+            outputDevice.type.type = AudioDeviceType::OUT_HEADSET;
+            EXPECT_EQ(1UL, outputs.count(outputDevice))
+                    << "For IN_HEADSET device " << eachInputDevice.toString()
+                    << " a matching OUT_HEADSET device not found.";
         }
     }
 }
