@@ -303,6 +303,7 @@ const AudioConfiguration BluetoothAudioSession::GetAudioConfig() {
       case SessionType::LE_AUDIO_PERIPHERAL_OFFLOAD_DECODING_DATAPATH:
         return AudioConfiguration(LeAudioConfiguration{});
       case SessionType::LE_AUDIO_BROADCAST_HARDWARE_OFFLOAD_ENCODING_DATAPATH:
+      case SessionType::LE_AUDIO_BROADCAST_HARDWARE_OFFLOAD_DECODING_DATAPATH:
         return AudioConfiguration(LeAudioBroadcastConfiguration{});
       default:
         return AudioConfiguration(PcmConfiguration{});
@@ -331,9 +332,11 @@ void BluetoothAudioSession::ReportAudioConfigChanged(
                   << toString(session_type_);
       return;
     }
-  } else if (session_type_ ==
-              SessionType::
-                  LE_AUDIO_BROADCAST_HARDWARE_OFFLOAD_ENCODING_DATAPATH) {
+  } else if (
+      session_type_ ==
+          SessionType::LE_AUDIO_BROADCAST_HARDWARE_OFFLOAD_ENCODING_DATAPATH ||
+      session_type_ ==
+          SessionType::LE_AUDIO_BROADCAST_HARDWARE_OFFLOAD_DECODING_DATAPATH) {
     if (audio_config.getTag() != AudioConfiguration::leAudioBroadcastConfig) {
       LOG(ERROR) << __func__ << " invalid audio config type for SessionType ="
                   << toString(session_type_);
@@ -452,6 +455,8 @@ bool BluetoothAudioSession::IsSessionReady(bool is_primary_hal) {
            SessionType::LE_AUDIO_HARDWARE_OFFLOAD_DECODING_DATAPATH ||
        session_type_ ==
            SessionType::LE_AUDIO_BROADCAST_HARDWARE_OFFLOAD_ENCODING_DATAPATH ||
+       session_type_ ==
+           SessionType::LE_AUDIO_BROADCAST_HARDWARE_OFFLOAD_DECODING_DATAPATH ||
        session_type_ == SessionType::A2DP_HARDWARE_OFFLOAD_DECODING_DATAPATH ||
        session_type_ == SessionType::HFP_HARDWARE_OFFLOAD_DATAPATH ||
        session_type_ ==
@@ -486,6 +491,8 @@ bool BluetoothAudioSession::IsSessionReadyInternal() {
            SessionType::LE_AUDIO_HARDWARE_OFFLOAD_DECODING_DATAPATH ||
        session_type_ ==
            SessionType::LE_AUDIO_BROADCAST_HARDWARE_OFFLOAD_ENCODING_DATAPATH ||
+       session_type_ ==
+           SessionType::LE_AUDIO_BROADCAST_HARDWARE_OFFLOAD_DECODING_DATAPATH ||
        session_type_ == SessionType::A2DP_HARDWARE_OFFLOAD_DECODING_DATAPATH ||
        session_type_ == SessionType::HFP_HARDWARE_OFFLOAD_DATAPATH ||
        session_type_ ==
@@ -619,6 +626,8 @@ bool BluetoothAudioSession::UpdateAudioConfig(
        session_type_ == SessionType::LE_AUDIO_SOFTWARE_ENCODING_DATAPATH ||
        session_type_ ==
            SessionType::LE_AUDIO_BROADCAST_SOFTWARE_ENCODING_DATAPATH ||
+       session_type_ ==
+           SessionType::LE_AUDIO_BROADCAST_SOFTWARE_DECODING_DATAPATH ||
        session_type_ == SessionType::A2DP_SOFTWARE_DECODING_DATAPATH);
   bool is_offload_a2dp_session =
       (session_type_ == SessionType::A2DP_HARDWARE_OFFLOAD_ENCODING_DATAPATH ||
@@ -636,7 +645,9 @@ bool BluetoothAudioSession::UpdateAudioConfig(
            SessionType::LE_AUDIO_PERIPHERAL_OFFLOAD_DECODING_DATAPATH);
   bool is_offload_le_audio_broadcast_session =
       (session_type_ ==
-       SessionType::LE_AUDIO_BROADCAST_HARDWARE_OFFLOAD_ENCODING_DATAPATH);
+           SessionType::LE_AUDIO_BROADCAST_HARDWARE_OFFLOAD_ENCODING_DATAPATH ||
+       session_type_ ==
+           SessionType::LE_AUDIO_BROADCAST_HARDWARE_OFFLOAD_DECODING_DATAPATH);
   auto audio_config_tag = audio_config.getTag();
   bool is_software_audio_config =
       (is_software_session &&
@@ -1021,6 +1032,20 @@ void BluetoothAudioSession::SetLatencyMode(const LatencyMode& latency_mode) {
   }
 
   auto hal_retval = stack_iface_->setLatencyMode(latency_mode);
+  if (!hal_retval.isOk()) {
+    LOG(WARNING) << __func__ << " - IBluetoothAudioPort SessionType="
+                 << toString(session_type_) << " failed";
+  }
+}
+
+void BluetoothAudioSession::UpdateSinkLatency(int64_t latency_ms) {
+  std::lock_guard<std::recursive_mutex> guard(mutex_);
+  if (!IsSessionReadyInternal()) {
+    LOG(DEBUG) << __func__ << " - SessionType=" << toString(session_type_)
+               << " has NO session";
+    return;
+  }
+  auto hal_retval = stack_iface_->updateSinkLatency(latency_ms);
   if (!hal_retval.isOk()) {
     LOG(WARNING) << __func__ << " - IBluetoothAudioPort SessionType="
                  << toString(session_type_) << " failed";
