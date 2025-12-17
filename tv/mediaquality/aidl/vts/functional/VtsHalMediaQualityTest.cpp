@@ -23,7 +23,11 @@
 #include <aidl/android/hardware/tv/mediaquality/BnPictureProfileAdjustmentListener.h>
 #include <aidl/android/hardware/tv/mediaquality/BnSoundProfileAdjustmentListener.h>
 #include <aidl/android/hardware/tv/mediaquality/CommonParamCapability.h>
+#include <aidl/android/hardware/tv/mediaquality/EqualizerBand.h>
+#include <aidl/android/hardware/tv/mediaquality/EqualizerCapabilities.h>
+#include <aidl/android/hardware/tv/mediaquality/EqualizerDetail.h>
 #include <aidl/android/hardware/tv/mediaquality/IMediaQuality.h>
+#include <aidl/android/hardware/tv/mediaquality/PanelTechnologyType.h>
 #include <aidl/android/hardware/tv/mediaquality/ParameterName.h>
 #include <aidl/android/hardware/tv/mediaquality/PictureParameter.h>
 #include <aidl/android/hardware/tv/mediaquality/PictureParameters.h>
@@ -32,12 +36,14 @@
 #include <aidl/android/hardware/tv/mediaquality/SoundParameters.h>
 #include <aidl/android/hardware/tv/mediaquality/SoundProfile.h>
 #include <aidl/android/hardware/tv/mediaquality/StreamStatus.h>
+#include <aidl/android/hardware/tv/mediaquality/StreamStatusConfiguration.h>
 
 #include <android/binder_auto_utils.h>
 #include <android/binder_manager.h>
 #include <binder/IServiceManager.h>
 #include <binder/ProcessState.h>
 #include <log/log.h>
+#include <utils/Errors.h>
 #include <future>
 
 using aidl::android::hardware::graphics::common::PixelFormat;
@@ -48,7 +54,11 @@ using aidl::android::hardware::tv::mediaquality::BnMediaQualityCallback;
 using aidl::android::hardware::tv::mediaquality::BnPictureProfileAdjustmentListener;
 using aidl::android::hardware::tv::mediaquality::BnSoundProfileAdjustmentListener;
 using aidl::android::hardware::tv::mediaquality::CommonParamCapability;
+using aidl::android::hardware::tv::mediaquality::EqualizerBand;
+using aidl::android::hardware::tv::mediaquality::EqualizerCapabilities;
+using aidl::android::hardware::tv::mediaquality::EqualizerDetail;
 using aidl::android::hardware::tv::mediaquality::IMediaQuality;
+using aidl::android::hardware::tv::mediaquality::PanelTechnologyType;
 using aidl::android::hardware::tv::mediaquality::ParamCapability;
 using aidl::android::hardware::tv::mediaquality::ParameterName;
 using aidl::android::hardware::tv::mediaquality::PictureParameter;
@@ -58,6 +68,7 @@ using aidl::android::hardware::tv::mediaquality::SoundParameter;
 using aidl::android::hardware::tv::mediaquality::SoundParameters;
 using aidl::android::hardware::tv::mediaquality::SoundProfile;
 using aidl::android::hardware::tv::mediaquality::StreamStatus;
+using aidl::android::hardware::tv::mediaquality::StreamStatusConfiguration;
 using aidl::android::hardware::tv::mediaquality::VendorParamCapability;
 using aidl::android::hardware::tv::mediaquality::VendorParameterIdentifier;
 using android::ProcessState;
@@ -618,17 +629,25 @@ TEST_P(MediaQualityAidl, TestSendDefaultPictureParameters) {
 }
 
 TEST_P(MediaQualityAidl, TestSetMutedColor) {
-    int32_t blue = 0xFF0000FF;
-    auto result = mediaquality->setMutedColor(blue);
-    ASSERT_TRUE(result.isOk());
+    int32_t version = 0;
+    ASSERT_OK(mediaquality->getInterfaceVersion(&version));
+    if (version >= 2) {
+        int32_t blue = 0xFF0000FF;
+        auto result = mediaquality->setMutedColor(blue);
+        ASSERT_TRUE(result.isOk());
+    }
 }
 
 TEST_P(MediaQualityAidl, TestSetColorMuteEnabled) {
-    auto result_enable = mediaquality->setColorMuteEnabled(true);
-    ASSERT_TRUE(result_enable.isOk());
+    int32_t version = 0;
+    ASSERT_OK(mediaquality->getInterfaceVersion(&version));
+    if (version >= 2) {
+        auto result_enable = mediaquality->setColorMuteEnabled(true);
+        ASSERT_TRUE(result_enable.isOk());
 
-    auto result_disable = mediaquality->setColorMuteEnabled(false);
-    ASSERT_TRUE(result_disable.isOk());
+        auto result_disable = mediaquality->setColorMuteEnabled(false);
+        ASSERT_TRUE(result_disable.isOk());
+    }
 }
 
 TEST_P(MediaQualityAidl, TestSetSoundProfileAdjustmentListener) {
@@ -750,6 +769,197 @@ TEST_P(MediaQualityAidl, TestSendInvalidSoundParameters) {
 
     ASSERT_FALSE(result.isOk());
     EXPECT_EQ(result.getExceptionCode(), EX_TRANSACTION_FAILED);
+}
+
+TEST_P(MediaQualityAidl, GetEqualizerCapabilities) {
+    int32_t version = 0;
+    ASSERT_OK(mediaquality->getInterfaceVersion(&version));
+    if (version >= 2) {
+        EqualizerCapabilities capabilities;
+        ASSERT_OK(mediaquality->getEqualizerCapabilities(&capabilities));
+    } else {
+        ALOGD("GetEqualizerCapabilities skipped due to interface version %d", version);
+    }
+}
+
+TEST_P(MediaQualityAidl, GetEqualizerSettings) {
+    int32_t version = 0;
+    ASSERT_OK(mediaquality->getInterfaceVersion(&version));
+    if (version >= 2) {
+        EqualizerDetail settings;
+        ASSERT_OK(mediaquality->getEqualizerSettings(&settings));
+    } else {
+        ALOGD("GetEqualizerSettings skipped due to interface version %d", version);
+    }
+}
+
+TEST_P(MediaQualityAidl, SetEqualizerSettings) {
+    int32_t version = 0;
+    ASSERT_OK(mediaquality->getInterfaceVersion(&version));
+    if (version >= 2) {
+        EqualizerCapabilities capabilities;
+        ASSERT_OK(mediaquality->getEqualizerCapabilities(&capabilities));
+
+        if (capabilities.supportedFrequenciesHz.empty()) {
+            ALOGD("TestSetEqualizerSettings: No supported frequencies, skipping test.");
+            return;
+        }
+
+        EqualizerDetail testDetail;
+        testDetail.bands.resize(capabilities.supportedFrequenciesHz.size());
+        for (size_t i = 0; i < capabilities.supportedFrequenciesHz.size(); ++i) {
+            testDetail.bands[i].frequencyHz = capabilities.supportedFrequenciesHz[i];
+            testDetail.bands[i].gainDb = 0;
+            testDetail.bands[i].qFactor = 1.0f;
+        }
+
+        ASSERT_OK(mediaquality->setEqualizerSettings(testDetail));
+    } else {
+        ALOGD("SetEqualizerSettings skipped due to interface version %d", version);
+    }
+}
+
+TEST_P(MediaQualityAidl, TestSetEqualizerSettings_MismatchedBands) {
+    int32_t version = 0;
+    ASSERT_OK(mediaquality->getInterfaceVersion(&version));
+    if (version >= 2) {
+        EqualizerCapabilities capabilities;
+        ASSERT_OK(mediaquality->getEqualizerCapabilities(&capabilities));
+
+        if (capabilities.supportedFrequenciesHz.empty()) {
+            ALOGD("TestSetEqualizerSettings_MismatchedBands: No supported frequencies, skipping "
+                  "test.");
+            return;
+        }
+
+        EqualizerDetail testDetail;
+        // Create bands that do NOT match the supported frequencies
+        testDetail.bands.resize(1);  // One band, but with an unsupported frequency
+        testDetail.bands[0].frequencyHz =
+                capabilities.supportedFrequenciesHz[0] + 1;  // Mismatched frequency
+        testDetail.bands[0].gainDb = 0;
+        testDetail.bands[0].qFactor = 1.0f;
+
+        auto result = mediaquality->setEqualizerSettings(testDetail);
+        ASSERT_FALSE(result.isOk());
+        EXPECT_EQ(result.getExceptionCode(), android::BAD_VALUE);
+    } else {
+        ALOGD("TestSetEqualizerSettings_MismatchedBands skipped due to interface version %d",
+              version);
+    }
+}
+
+TEST_P(MediaQualityAidl, TestIsDisplayTechnologySupported) {
+    int32_t version;
+    ASSERT_OK(mediaquality->getInterfaceVersion(&version));
+    if (version >= 2) {
+        const std::vector<PanelTechnologyType> all_features = {
+                PanelTechnologyType::OLED,
+        };
+
+        for (const auto& feature : all_features) {
+            bool supported;
+            auto result = mediaquality->isDisplayTechnologySupported(feature, &supported);
+            ASSERT_OK(result);
+        }
+    } else {
+        ALOGD("TestIsDisplayTechnologySupported skipped due to interface version %d", version);
+    }
+}
+
+TEST_P(MediaQualityAidl, TestSendDefaultPictureProfile) {
+    int32_t version;
+    ASSERT_OK(mediaquality->getInterfaceVersion(&version));
+    if (version < 2) {
+        ALOGD("Test requires interface version 2 or higher.");
+        return;
+    }
+    PictureProfile pictureProfile;
+
+    PictureParameters pictureParameters;
+    std::vector<PictureParameter> picParams;
+
+    PictureParameter brightnessParam;
+    brightnessParam.set<PictureParameter::Tag::brightness>(0.5f);
+    picParams.push_back(brightnessParam);
+
+    PictureParameter contrastParam;
+    contrastParam.set<PictureParameter::Tag::contrast>(50);
+    picParams.push_back(contrastParam);
+
+    pictureParameters.pictureParameters = picParams;
+
+    pictureProfile.parameters = pictureParameters;
+    ASSERT_OK(mediaquality->sendDefaultPictureProfile(pictureProfile));
+}
+
+TEST_P(MediaQualityAidl, TestSendDefaultPictureProfileWithStreamStatusConfiguration) {
+    int32_t version;
+    ASSERT_OK(mediaquality->getInterfaceVersion(&version));
+    if (version < 2) {
+        ALOGD("Test requires interface version 2 or higher.");
+        return;
+    }
+    PictureProfile pictureProfile;
+
+    // Base parameters
+    PictureParameters baseParams;
+    std::vector<PictureParameter> basePicParams;
+    PictureParameter brightnessParam;
+    brightnessParam.set<PictureParameter::Tag::brightness>(0.5f);
+    basePicParams.push_back(brightnessParam);
+    baseParams.pictureParameters = basePicParams;
+    pictureProfile.parameters = baseParams;
+
+    // StreamStatusConfiguration
+    StreamStatusConfiguration streamConfig;
+
+    // SDR Parameters
+    PictureParameters sdrParams;
+    std::vector<PictureParameter> sdrPicParams;
+    PictureParameter sdrContrast;
+    sdrContrast.set<PictureParameter::Tag::contrast>(60);
+    sdrPicParams.push_back(sdrContrast);
+    sdrParams.pictureParameters = sdrPicParams;
+    streamConfig.sdrPictureParameters = sdrParams;
+
+    // HDR10 Parameters
+    PictureParameters hdr10Params;
+    std::vector<PictureParameter> hdr10PicParams;
+    PictureParameter hdr10Contrast;
+    hdr10Contrast.set<PictureParameter::Tag::contrast>(80);
+    hdr10PicParams.push_back(hdr10Contrast);
+    hdr10Params.pictureParameters = hdr10PicParams;
+    streamConfig.hdr10PictureParameters = hdr10Params;
+
+    pictureProfile.streamStatusConfiguration = streamConfig;
+
+    ASSERT_OK(mediaquality->sendDefaultPictureProfile(pictureProfile));
+}
+
+TEST_P(MediaQualityAidl, TestSendDefaultSoundProfile) {
+    int32_t version;
+    ASSERT_OK(mediaquality->getInterfaceVersion(&version));
+    if (version < 2) {
+        ALOGD("Test requires interface version 2 or higher.");
+        return;
+    }
+    SoundProfile soundProfile;
+    SoundParameters soundParameters;
+    std::vector<SoundParameter> soundParams;
+
+    SoundParameter balanceParam;
+    balanceParam.set<SoundParameter::Tag::balance>(50);
+    soundParams.push_back(balanceParam);
+
+    SoundParameter bassParam;
+    bassParam.set<SoundParameter::Tag::bass>(50);
+    soundParams.push_back(bassParam);
+
+    soundParameters.soundParameters = soundParams;
+
+    soundProfile.parameters = soundParameters;
+    ASSERT_OK(mediaquality->sendDefaultSoundProfile(soundProfile));
 }
 
 GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(MediaQualityAidl);
