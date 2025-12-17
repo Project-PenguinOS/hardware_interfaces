@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018 The Android Open Source Project
+ * Copyright 2025 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,23 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-package android.hardware.health.storage@1.0;
+package android.hardware.security.see.ext;
 
 /**
- * Status values for HAL methods.
+ * Empty extension interface for a trusted HAL.
+ *
+ * All trusted HALs are expected to be extended with this interface.
+ * It is not marked with @VintfStability on purpose, as it is used to
+ * ensure that trusted hal environments are built with a vendor libbinder.
  */
-enum Result : uint32_t {
-    /**
-     * Execution of the method is successful.
-     */
-    SUCCESS = 0,
-    /**
-     * An IO error is encountered when the HAL communicates with the device.
-     */
-    IO_ERROR,
-    /**
-     * An unknown error is encountered.
-     */
-    UNKNOWN_ERROR,
-};
+interface ITrustedHalExt {}
