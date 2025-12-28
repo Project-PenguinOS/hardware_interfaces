@@ -37,4 +37,8 @@ parcelable PortPartnerStatus {
   android.hardware.usb.Bc12Type bc12Type = android.hardware.usb.Bc12Type.UNKNOWN;
   android.hardware.usb.PowerProfile[] sinkPowerProfiles = {};
   android.hardware.usb.PowerProfile[] sourcePowerProfiles = {};
+  android.hardware.usb.AltModeData[] supportedAltModes = {};
+  android.hardware.usb.PortPowerRole activePowerRole = android.hardware.usb.PortPowerRole.NONE;
+  android.hardware.usb.PortDataRole activeDataRole = android.hardware.usb.PortDataRole.NONE;
+  @nullable android.hardware.usb.PeripheralIdentity identity;
 }
