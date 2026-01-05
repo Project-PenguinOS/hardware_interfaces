@@ -20,6 +20,8 @@
 
 #include <BluetoothAudioCodecs.h>
 #include <android-base/logging.h>
+#include <android-base/properties.h>
+#include <com_android_btaudio_hal_flags.h>
 
 #include "A2dpOffloadAudioProvider.h"
 #include "A2dpSoftwareAudioProvider.h"
@@ -97,6 +99,14 @@ ndk::ScopedAStatus BluetoothAudioProviderFactory::openProvider(
     case SessionType::HFP_HARDWARE_OFFLOAD_DATAPATH:
       provider = ndk::SharedRefBase::make<HfpOffloadAudioProvider>();
       break;
+    case SessionType::LE_AUDIO_PERIPHERAL_OFFLOAD_ENCODING_DATAPATH:
+      provider = ndk::SharedRefBase::make<
+          LeAudioOffloadPeripheralOutputAudioProvider>();
+      break;
+    case SessionType::LE_AUDIO_PERIPHERAL_OFFLOAD_DECODING_DATAPATH:
+      provider = ndk::SharedRefBase::make<
+          LeAudioOffloadPeripheralInputAudioProvider>();
+      break;
     default:
       provider = nullptr;
       break;
@@ -140,6 +150,13 @@ ndk::ScopedAStatus BluetoothAudioProviderFactory::getProviderCapabilities(
             db_codec_capabilities[i]);
       }
     }
+  } else if (session_type ==
+                 SessionType::LE_AUDIO_PERIPHERAL_OFFLOAD_ENCODING_DATAPATH ||
+             session_type ==
+                 SessionType::LE_AUDIO_PERIPHERAL_OFFLOAD_DECODING_DATAPATH) {
+    LOG(WARNING) << __func__ << " - SessionType=" << toString(session_type)
+                 << "operation not supported";
+    return ndk::ScopedAStatus::fromExceptionCode(EX_UNSUPPORTED_OPERATION);
   } else if (session_type != SessionType::UNKNOWN) {
     auto pcm_capabilities = BluetoothAudioCodecs::GetSoftwarePcmCapabilities();
     _aidl_return->resize(pcm_capabilities.size());
@@ -162,7 +179,8 @@ ndk::ScopedAStatus BluetoothAudioProviderFactory::getProviderInfo(
 
   if (session_type == SessionType::A2DP_HARDWARE_OFFLOAD_ENCODING_DATAPATH ||
       session_type == SessionType::A2DP_HARDWARE_OFFLOAD_DECODING_DATAPATH) {
-    if (!kEnableA2dpCodecExtensibility) {
+    if (!::android::base::GetBoolProperty(kEnableA2dpCodecExtensibility,
+                                          false)) {
       // Implementing getProviderInfo equates supporting
       // A2dp codec extensibility.
       return ndk::ScopedAStatus::fromStatus(STATUS_UNKNOWN_TRANSACTION);
@@ -181,15 +199,33 @@ ndk::ScopedAStatus BluetoothAudioProviderFactory::getProviderInfo(
       session_type ==
           SessionType::LE_AUDIO_HARDWARE_OFFLOAD_DECODING_DATAPATH ||
       session_type ==
-          SessionType::LE_AUDIO_BROADCAST_HARDWARE_OFFLOAD_ENCODING_DATAPATH) {
+          SessionType::LE_AUDIO_BROADCAST_HARDWARE_OFFLOAD_ENCODING_DATAPATH ||
+      session_type ==
+          SessionType::LE_AUDIO_PERIPHERAL_OFFLOAD_ENCODING_DATAPATH ||
+      session_type ==
+          SessionType::LE_AUDIO_PERIPHERAL_OFFLOAD_DECODING_DATAPATH) {
     std::vector<CodecInfo> db_codec_info =
         BluetoothAudioCodecs::GetCodecInfo(session_type);
+
     // Return provider info supports without checking db_codec_info
     // This help with various flow implementation for multidirectional support.
     auto& provider_info = _aidl_return->emplace();
-    provider_info.supportsMultidirectionalCapabilities = true;
     provider_info.name = kLeAudioOffloadProviderName;
     provider_info.codecInfos = db_codec_info;
+    for (const auto& codec_info : db_codec_info) {
+      LOG(INFO) << __func__ << " - Codec Info: " << codec_info.toString();
+    }
+    if (!com::android::btaudio::hal::flags::leaudio_iso_parameter_update()) {
+      provider_info.supportsMultidirectionalCapabilities = true;
+      return ndk::ScopedAStatus::ok();
+    }
+    auto advanced_setting =
+        BluetoothAudioCodecs::GetAdvancedSetting(session_type);
+    provider_info.advancedSetting = advanced_setting;
+    if (advanced_setting) {
+      LOG(INFO) << __func__
+                << " - Advanced Setting: " << advanced_setting->toString();
+    }
     return ndk::ScopedAStatus::ok();
   }
 

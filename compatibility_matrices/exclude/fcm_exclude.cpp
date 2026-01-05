@@ -153,6 +153,7 @@ bool ShouldCheckMissingAidlHalsInFcm(const std::string& packageAndVersion) {
             // Packages without top level interfaces (including types-only packages) are exempted.
             "android.hardware.audio.common@",
             "android.hardware.biometrics.common@",
+            "android.hardware.biometrics.fingerprint.location@",
             "android.hardware.camera.metadata@",
             "android.hardware.camera.device@",
             "android.hardware.camera.common@",
@@ -169,6 +170,7 @@ bool ShouldCheckMissingAidlHalsInFcm(const std::string& packageAndVersion) {
             "android.hardware.uwb.fira_android@",
             "android.hardware.wifi.common@",
             "android.hardware.biometrics.fingerprint.virtualhal@",
+            "android.hardware.security.see.hwcrypto.types",
 
             // Test packages are exempted.
             "android.hardware.tests.",
@@ -176,8 +178,6 @@ bool ShouldCheckMissingAidlHalsInFcm(const std::string& packageAndVersion) {
             // Fastboot HAL is only used by recovery. Recovery is owned by OEM. Framework
             // does not depend on this HAL, hence it is not declared in any manifests or matrices.
             "android.hardware.fastboot@",
-            "android.hardware.security.see.hwcrypto.types",
-            "android.hardware.security.see.storage",
     };
 
     static std::vector<std::string> excluded_exact{

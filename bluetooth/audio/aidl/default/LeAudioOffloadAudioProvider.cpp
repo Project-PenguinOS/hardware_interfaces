@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <aidl/android/hardware/bluetooth/audio/ConfigurationFlags.h>
+
 #include "aidl/android/hardware/bluetooth/audio/CodecId.h"
 #define LOG_TAG "BTAudioProviderLeAudioHW"
 
@@ -142,6 +144,18 @@ LeAudioOffloadOutputAudioProvider::LeAudioOffloadOutputAudioProvider()
 LeAudioOffloadInputAudioProvider::LeAudioOffloadInputAudioProvider()
     : LeAudioOffloadAudioProvider() {
   session_type_ = SessionType::LE_AUDIO_HARDWARE_OFFLOAD_DECODING_DATAPATH;
+}
+
+LeAudioOffloadPeripheralOutputAudioProvider::
+    LeAudioOffloadPeripheralOutputAudioProvider()
+    : LeAudioOffloadAudioProvider() {
+  session_type_ = SessionType::LE_AUDIO_PERIPHERAL_OFFLOAD_ENCODING_DATAPATH;
+}
+
+LeAudioOffloadPeripheralInputAudioProvider::
+    LeAudioOffloadPeripheralInputAudioProvider()
+    : LeAudioOffloadAudioProvider() {
+  session_type_ = SessionType::LE_AUDIO_PERIPHERAL_OFFLOAD_DECODING_DATAPATH;
 }
 
 LeAudioOffloadBroadcastAudioProvider::LeAudioOffloadBroadcastAudioProvider()
@@ -784,6 +798,24 @@ LeAudioOffloadAudioProvider::getRequirementMatchedAseConfigurationSettings(
         filtered_setting.sourceAseConfiguration, isExact);
     if (!filtered_setting.sourceAseConfiguration.has_value()) {
       return std::nullopt;
+    }
+  } else if (requirement.flags.has_value() &&
+             (requirement.flags.value().bitmask &
+              ConfigurationFlags::SPATIAL_AUDIO) &&
+             setting.sourceAseConfiguration.has_value()) {
+    // Stack doesn't have any source ase requirements for DSA 2.0
+    // Count all source ase configuration as valid
+    LOG(INFO) << "Skipping source ase requirements filter for DSA config";
+    if (!filtered_setting.sourceAseConfiguration.has_value()) {
+      filtered_setting.sourceAseConfiguration =
+          std::vector<std::optional<AseDirectionConfiguration>>();
+    }
+    for (auto direction_configuration :
+         setting.sourceAseConfiguration.value()) {
+      if (direction_configuration.has_value()) {
+        filtered_setting.sourceAseConfiguration.value().push_back(
+            direction_configuration);
+      }
     }
   }
 

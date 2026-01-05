@@ -291,6 +291,22 @@ interface IBluetoothAudioProvider {
          * Configure QoS
          */
         int retransmissionNum;
+        /**
+         * bit 0 for S=8 coding, bit 1 for S=2 coding for the codec PHY
+         */
+        int codedRates;
+        /**
+         * HDT rates used in Set CIG Parameters command
+         */
+        int hdtRates;
+        /**
+         * HDT Message Integrity Check (MIC) length used in Set CIG Parameters command
+         */
+        int hdtMicLength;
+        /**
+         * HDT packet format used in Set CIG Parameters command
+         */
+        int hdtPacketFormat;
     }
 
     /**

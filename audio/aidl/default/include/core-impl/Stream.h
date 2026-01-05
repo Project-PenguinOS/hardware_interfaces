@@ -25,6 +25,7 @@
 #include <variant>
 
 #include <StreamWorker.h>
+#include <SynchronousTaskQueue.h>
 #include <Utils.h>
 #include <aidl/android/hardware/audio/common/SinkMetadata.h>
 #include <aidl/android/hardware/audio/common/SourceMetadata.h>
@@ -349,6 +350,8 @@ class StreamOutWorkerLogic : public StreamWorkerCommonLogic {
     void onClipStateChange(size_t clipFramesLeft, bool hasNextClip) override;
 
   private:
+    void onBufferStateChangeImpl(size_t bufferFramesLeft);
+    void onClipStateChangeImpl(size_t clipFramesLeft, bool hasNextClip);
     bool write(size_t clientSize, StreamDescriptor::Reply* reply);
     bool writeMmap(StreamDescriptor::Reply* reply);
 
@@ -356,6 +359,9 @@ class StreamOutWorkerLogic : public StreamWorkerCommonLogic {
 
     enum DrainState : int32_t { NONE, ALL, EN /*early notify*/, EN_SENT };
     std::atomic<DrainState> mDrainState = DrainState::NONE;
+    ::android::hardware::audio::common::SynchronousTaskQueue<
+            ::android::hardware::audio::common::PostponedMethodCall<StreamOutWorkerLogic>>
+            mCallTasks;
 };
 using StreamOutWorker = StreamWorkerImpl<StreamOutWorkerLogic>;
 
@@ -595,9 +601,7 @@ class StreamOut : virtual public StreamCommonInterface, public BnStreamOut {
     }
     ndk::ScopedAStatus updateMetadata(
             const ::aidl::android::hardware::audio::common::SourceMetadata& in_sourceMetadata)
-            override {
-        return updateMetadataCommon(in_sourceMetadata);
-    }
+            override;
     ndk::ScopedAStatus updateOffloadMetadata(
             const ::aidl::android::hardware::audio::common::AudioOffloadMetadata&
                     in_offloadMetadata) override;
@@ -626,6 +630,8 @@ class StreamOut : virtual public StreamCommonInterface, public BnStreamOut {
     StreamOut(StreamContext&& context,
               const std::optional<::aidl::android::media::audio::common::AudioOffloadInfo>&
                       offloadInfo);
+    ndk::ScopedAStatus validateMetadata(
+            const ::aidl::android::hardware::audio::common::SourceMetadata& sourceMetadata);
 
     StreamContext mContextInstance;
     const std::optional<::aidl::android::media::audio::common::AudioOffloadInfo> mOffloadInfo;

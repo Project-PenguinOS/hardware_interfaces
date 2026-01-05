@@ -1667,6 +1667,24 @@ void CameraAidlTest::verifyLogicalOrUltraHighResCameraMetadata(
         ASSERT_GT(numMultiResFormats, 0);
     }
 
+    // Check multi-resolution concurrency support is consistent with multi-resolution
+    // stream configuration
+    retcode = find_camera_metadata_ro_entry(
+            metadata, ANDROID_SCALER_CONCURRENT_MULTI_RESOLUTION_FORMATS, &entry);
+    bool supportConcurrentMultiResReaders = (0 == retcode && entry.count > 0);
+    if (supportConcurrentMultiResReaders) {
+        ASSERT_TRUE(multiResolutionStreamSupported);
+        std::set<int32_t> concurrencyFormats;
+        for (size_t i = 0; i < entry.count; i++) {
+            concurrencyFormats.insert(entry.data.i32[i]);
+        }
+        ASSERT_EQ(concurrencyFormats.size(), entry.count);
+
+        for (int32_t format : concurrencyFormats) {
+            ASSERT_TRUE(multiResOutputFormatCounterMap.count(format));
+        }
+    }
+
     // Make sure ANDROID_LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID is available in
     // result keys.
     if (isMultiCamera) {
@@ -3354,21 +3372,25 @@ void CameraAidlTest::verify10BitMetadata(
         bool smpte2086Present = importer.isSmpte2086Present(b.buffer.buffer);
         bool smpte2094_10Present = importer.isSmpte2094_10Present(b.buffer.buffer);
         bool smpte2094_40Present = importer.isSmpte2094_40Present(b.buffer.buffer);
+        bool smpte2094_50Present = importer.isSmpte2094_50Present(b.buffer.buffer);
 
         switch (static_cast<int64_t>(profile)) {
             case ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_HLG10:
                 ASSERT_FALSE(smpte2086Present);
                 ASSERT_FALSE(smpte2094_10Present);
                 ASSERT_FALSE(smpte2094_40Present);
+                ASSERT_FALSE(smpte2094_50Present);
                 break;
             case ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_HDR10:
                 ASSERT_TRUE(smpte2086Present);
                 ASSERT_FALSE(smpte2094_10Present);
                 ASSERT_FALSE(smpte2094_40Present);
+                ASSERT_FALSE(smpte2094_50Present);
                 break;
             case ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_HDR10_PLUS:
                 ASSERT_FALSE(smpte2094_10Present);
                 ASSERT_TRUE(smpte2094_40Present);
+                ASSERT_FALSE(smpte2094_50Present);
                 break;
             case ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_DOLBY_VISION_10B_HDR_REF:
             case ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_DOLBY_VISION_10B_HDR_REF_PO:
@@ -3381,6 +3403,38 @@ void CameraAidlTest::verify10BitMetadata(
                 ASSERT_FALSE(smpte2086Present);
                 ASSERT_TRUE(smpte2094_10Present);
                 ASSERT_FALSE(smpte2094_40Present);
+                ASSERT_FALSE(smpte2094_50Present);
+                break;
+            case ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_STANDARD_AGTM:
+            case ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_HLG10_AGTM:
+                ASSERT_FALSE(smpte2086Present);
+                ASSERT_FALSE(smpte2094_10Present);
+                ASSERT_FALSE(smpte2094_40Present);
+                ASSERT_TRUE(smpte2094_50Present);
+                break;
+            case ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_HDR10_AGTM:
+                ASSERT_TRUE(smpte2086Present);
+                ASSERT_FALSE(smpte2094_10Present);
+                ASSERT_FALSE(smpte2094_40Present);
+                ASSERT_TRUE(smpte2094_50Present);
+                break;
+            case ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_HDR10_PLUS_AGTM:
+                ASSERT_FALSE(smpte2094_10Present);
+                ASSERT_TRUE(smpte2094_40Present);
+                ASSERT_TRUE(smpte2094_50Present);
+                break;
+            case ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_DOLBY_VISION_10B_HDR_REF_AGTM:
+            case ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_DOLBY_VISION_10B_HDR_REF_PO_AGTM:
+            case ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_DOLBY_VISION_10B_HDR_OEM_AGTM:
+            case ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_DOLBY_VISION_10B_HDR_OEM_PO_AGTM:
+            case ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_DOLBY_VISION_8B_HDR_REF_AGTM:
+            case ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_DOLBY_VISION_8B_HDR_REF_PO_AGTM:
+            case ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_DOLBY_VISION_8B_HDR_OEM_AGTM:
+            case ANDROID_REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP_DOLBY_VISION_8B_HDR_OEM_PO_AGTM:
+                ASSERT_FALSE(smpte2086Present);
+                ASSERT_TRUE(smpte2094_10Present);
+                ASSERT_FALSE(smpte2094_40Present);
+                ASSERT_TRUE(smpte2094_50Present);
                 break;
             default:
                 ALOGE("%s: Unexpected 10-bit dynamic range profile: %" PRId64, __FUNCTION__,

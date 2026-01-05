@@ -142,8 +142,11 @@ class DebugCentralImpl : public DebugCentral {
 
   std::string& GetCoredumpTimestampString() override;
 
+  void DumpPartialHalLogToLogcat() override;
+
  private:
   static constexpr int kMaxHalLogLines = 400;
+  static constexpr size_t kMaxPartialLogLines = 50;
   std::string serial_debug_port_;
   std::string crash_timestamp_;
   std::recursive_mutex mutex_;
@@ -346,8 +349,25 @@ bool DebugCentralImpl::OkToGenerateCrashDump(uint8_t error_code) {
   return is_thread_dispatcher_working || debug_monitor_.IsBluetoothEnabled();
 }
 
+void DebugCentralImpl::DumpPartialHalLogToLogcat() {
+  size_t skip_count = 0;
+  if (hal_log_.size() > kMaxPartialLogLines) {
+    skip_count = hal_log_.size() - kMaxPartialLogLines;
+  }
+
+  auto it = hal_log_.begin();
+  std::advance(it, skip_count);
+
+  for (; it != hal_log_.end(); ++it) {
+    auto timestamp = it->second;
+    auto log = it->first;
+    LOG(INFO) << __func__ << ": " << timestamp << " - " << log;
+  }
+}
+
 std::string DebugCentralImpl::DumpBluetoothHalLog(
     const std::vector<Coredump>& client_dumps) {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
   std::stringstream anchor_log;
   for (auto it = anchor_log_.begin(); it != anchor_log_.end(); ++it) {
     std::string log = it->second.first;
@@ -447,6 +467,11 @@ void DebugCentralImpl::GenerateCoredump(CoredumpErrorCode error_code,
   // Running state.
   WakelockWatchdog::GetWatchdog().Pause();
   is_coredump_generated_ = true;
+
+  // Create the timestamp string as soon as a crash is detected,
+  // To ensure the coredump timestamp is generated and available
+  // before any debug clients are notified.
+  GetOrCreateCoredumpTimestampString();
 
   HAL_LOG(ERROR) << __func__ << ": Reason: "
                  << CoredumpErrorCodeToString(error_code, sub_error_code);

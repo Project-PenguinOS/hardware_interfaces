@@ -21,10 +21,12 @@
 #include <utils/SystemClock.h>
 
 #include "ApeHeader.h"
+#include "MpegAudioHeader.h"
 #include "core-impl/StreamOffloadStub.h"
 
 using aidl::android::hardware::audio::common::SourceMetadata;
 using aidl::android::media::audio::common::AudioDevice;
+using aidl::android::media::audio::common::AudioFormatType;
 using aidl::android::media::audio::common::AudioOffloadInfo;
 using aidl::android::media::audio::common::MicrophoneInfo;
 
@@ -37,16 +39,25 @@ std::string DspSimulatorLogic::init() {
 }
 
 DspSimulatorLogic::Status DspSimulatorLogic::cycle() {
+    using DrainMode = StreamDescriptor::DrainMode;
     std::vector<std::pair<int64_t, bool>> clipNotifies;
+    DrainMode emptyDrainNotify = DrainMode::DRAIN_UNSPECIFIED;
     // Simulate playback.
     const int64_t timeBeginNs = ::android::uptimeNanos();
     usleep(1000);
     const int64_t clipFramesPlayed =
             (::android::uptimeNanos() - timeBeginNs) * mSharedState.sampleRate / NANOS_PER_SECOND;
-    const int64_t bufferFramesConsumed = clipFramesPlayed / 2;  // assume 1:2 compression ratio
+    const int64_t bufferFramesConsumed =
+            mSharedState.format.type == AudioFormatType::PCM
+                    ? clipFramesPlayed       // For PCM data, the data is not compressed
+                    : clipFramesPlayed / 2;  // assume 1:2 compression ratio
     int64_t bufferFramesLeft = 0, bufferNotifyFrames = DspSimulatorState::kSkipBufferNotifyFrames;
     {
         std::lock_guard l(mSharedState.lock);
+        if (mSharedState.clips.empty()) {
+            emptyDrainNotify = mSharedState.draining;
+        }
+        mSharedState.draining = DrainMode::DRAIN_UNSPECIFIED;
         mSharedState.bufferFramesLeft =
                 mSharedState.bufferFramesLeft > bufferFramesConsumed
                         ? mSharedState.bufferFramesLeft - bufferFramesConsumed
@@ -63,8 +74,16 @@ DspSimulatorLogic::Status DspSimulatorLogic::cycle() {
                     clipNotifies.emplace_back(clipFramesLeft, hasNextClip);
                 }
             } else {
-                clipNotifies.emplace_back(0 /*clipFramesLeft*/, hasNextClip);
-                framesPlayed -= mSharedState.clips.removeCurrent();
+                if (mSharedState.format.type == AudioFormatType::PCM) {
+                    // There is not enough data to be full played, set `framesPlayed` to 0 so that
+                    // it can exit the while loop.
+                    framesPlayed = 0;
+                    mSharedState.clips.trimCurrentFrames(0);
+                    clipNotifies.emplace_back(0 /*clipFramesLeft*/, false /*hasNextClip*/);
+                } else {
+                    clipNotifies.emplace_back(0 /*clipFramesLeft*/, hasNextClip);
+                    framesPlayed -= mSharedState.clips.removeCurrent();
+                }
                 if (!hasNextClip) {
                     // Since it's a simulation, the buffer consumption rate it not real,
                     // thus 'bufferFramesLeft' might still have something, need to erase it.
@@ -83,10 +102,19 @@ DspSimulatorLogic::Status DspSimulatorLogic::cycle() {
         LOG(DEBUG) << __func__ << ": sending onBufferStateChange: " << bufferFramesLeft;
         mSharedState.callback->onBufferStateChange(bufferFramesLeft);
     }
-    for (const auto& notify : clipNotifies) {
-        LOG(DEBUG) << __func__ << ": sending onClipStateChange: " << notify.first << ", "
-                   << notify.second;
-        mSharedState.callback->onClipStateChange(notify.first, notify.second);
+    if (!clipNotifies.empty()) {
+        for (const auto& notify : clipNotifies) {
+            LOG(DEBUG) << __func__ << ": sending onClipStateChange: " << notify.first << ", "
+                       << notify.second;
+            mSharedState.callback->onClipStateChange(notify.first, notify.second);
+        }
+    } else if (emptyDrainNotify != DrainMode::DRAIN_UNSPECIFIED) {
+        LOG(DEBUG) << __func__ << ": sending onClipStateChange with no clips for "
+                   << toString(emptyDrainNotify);
+        if (emptyDrainNotify == DrainMode::DRAIN_EARLY_NOTIFY) {
+            mSharedState.callback->onClipStateChange(1 /*clipFramesLeft*/, false /*hasNextClip*/);
+        }
+        mSharedState.callback->onClipStateChange(0 /*clipFramesLeft*/, false /*hasNextClip*/);
     }
     return Status::CONTINUE;
 }
@@ -98,16 +126,28 @@ using offload::DspSimulatorState;
 DriverOffloadStubImpl::DriverOffloadStubImpl(const StreamContext& context)
     : DriverStubImpl(context, 0 /*asyncSleepTimeUs*/),
       mBufferNotifyFrames(static_cast<int64_t>(context.getBufferSizeInFrames()) / 2),
-      mState{context.getFormat().encoding, context.getSampleRate(),
+      mState{context.getFormat(), context.getSampleRate(),
              250 /*earlyNotifyMs*/ * context.getSampleRate() / MILLIS_PER_SECOND},
       mDspWorker(mState) {
     LOG_IF(FATAL, !mIsAsynchronous) << "The steam must be used in asynchronous mode";
+
+    if (mState.format.encoding == "audio/x-ape") {
+        mTransferHandler = &DriverOffloadStubImpl::handleApeTransfer;
+    } else if (mState.format.encoding == "audio/mpeg") {
+        mTransferHandler = &DriverOffloadStubImpl::handleMpegTransfer;
+    } else if (mState.format.type == AudioFormatType::PCM) {
+        mTransferHandler = &DriverOffloadStubImpl::handlePcmTransfer;
+        // For PCM offload, there is no way for the HAL to know where is the end of a clip.
+        // In that case, it assumes there is only one clip.
+        LOG_IF(FATAL, !mState.clips.add(0)) << "Cannot initialize for PCM offload";
+    }
 }
 
 ::android::status_t DriverOffloadStubImpl::init(DriverCallbackInterface* callback) {
     RETURN_STATUS_IF_ERROR(DriverStubImpl::init(callback));
-    if (!StreamOffloadStub::getSupportedEncodings().count(mState.formatEncoding)) {
-        LOG(ERROR) << __func__ << ": encoded format \"" << mState.formatEncoding
+    if (!StreamOffloadStub::getSupportedEncodings().count(mState.format.encoding) &&
+        mState.format.type != AudioFormatType::PCM) {
+        LOG(ERROR) << __func__ << ": encoded format \"" << mState.format.toString()
                    << "\" is not supported";
         return ::android::NO_INIT;
     }
@@ -125,6 +165,7 @@ DriverOffloadStubImpl::DriverOffloadStubImpl(const StreamContext& context)
         }
     }
     mState.bufferNotifyFrames = DspSimulatorState::kSkipBufferNotifyFrames;
+    mState.draining = drainMode;
     return ::android::OK;
 }
 
@@ -171,6 +212,29 @@ DriverOffloadStubImpl::DriverOffloadStubImpl(const StreamContext& context)
     RETURN_STATUS_IF_ERROR(
             DriverStubImpl::transfer(buffer, frameCount, actualFrameCount, latencyMs));
     RETURN_STATUS_IF_ERROR(startWorkerIfNeeded());
+
+    if (mTransferHandler != nullptr) {
+        const ::android::status_t status =
+                (this->*mTransferHandler)(buffer, frameCount, actualFrameCount);
+        if (status != ::android::OK) {
+            return status;
+        }
+    } else {
+        LOG(FATAL) << __func__ << ": unsupported format for offload: " << mState.format.toString();
+        *actualFrameCount = 0;
+    }
+
+    {
+        std::lock_guard l(mState.lock);
+        mState.bufferFramesLeft = *actualFrameCount;
+        mState.bufferNotifyFrames = mBufferNotifyFrames;
+    }
+    mDspWorker.resume();
+    return ::android::OK;
+}
+
+::android::status_t DriverOffloadStubImpl::handleApeTransfer(void* buffer, size_t frameCount,
+                                                             size_t* actualFrameCount) {
     // Scan the buffer for clip headers.
     *actualFrameCount = frameCount;
     while (buffer != nullptr && frameCount > 0) {
@@ -205,12 +269,64 @@ DriverOffloadStubImpl::DriverOffloadStubImpl(const StreamContext& context)
             frameCount = 0;
         }
     }
-    {
-        std::lock_guard l(mState.lock);
-        mState.bufferFramesLeft = *actualFrameCount;
-        mState.bufferNotifyFrames = mBufferNotifyFrames;
+    return ::android::OK;
+}
+
+::android::status_t DriverOffloadStubImpl::handleMpegTransfer(void* buffer, size_t frameCount,
+                                                              size_t* actualFrameCount) {
+    const size_t bufferSizeBytes = frameCount * mFrameSizeBytes;
+    const uint8_t* currentPtr = static_cast<const uint8_t*>(buffer);
+    const uint8_t* const endPtr = currentPtr + bufferSizeBytes;
+    const uint8_t* const beginPtr = currentPtr;
+    if (mMpegFrameState.bytesPending > 0) {
+        size_t processBytes =
+                std::min(mMpegFrameState.bytesPending, static_cast<size_t>(endPtr - currentPtr));
+        currentPtr += processBytes;
+        mMpegFrameState.bytesPending -= processBytes;
     }
-    mDspWorker.resume();
+    while (currentPtr < endPtr) {
+        const uint8_t* const frameBeginning = currentPtr;
+        std::optional<MpegFrame> frameOpt = findMpegFrame(&currentPtr, endPtr);
+        if (!frameOpt.has_value()) {
+            // Could not find a header in the input buffer.
+            break;
+        }
+
+        const MpegFrame& frame = frameOpt.value();
+        LOG(DEBUG) << __func__ << ": Found MPEG frame at offset " << frameBeginning - beginPtr;
+        if (frame.isID3v1) {
+            mMpegFrameState.clipEnded = true;
+        } else {
+            if (frame.sampleRate != mState.sampleRate) {
+                LOG(ERROR) << __func__ << ": clip sample rate " << frame.sampleRate
+                           << " does not match stream sample rate " << mState.sampleRate;
+                return ::android::BAD_VALUE;
+            }
+            std::lock_guard l(mState.lock);
+            if (frame.isID3v2 || mState.clips.empty() || mMpegFrameState.clipEnded) {
+                if (!mState.clips.add(0)) {
+                    LOG(ERROR) << __func__
+                               << ": not ready for the next clip, clips: " << mState.clips.log();
+                    return ::android::INVALID_OPERATION;
+                }
+                mMpegFrameState.clipEnded = false;
+            }
+            mState.clips.updateLastFrames(frame.frameSize);
+        }
+        if (currentPtr == endPtr) {
+            mMpegFrameState.bytesPending = frame.bytesPending;
+            break;
+        }
+    }
+    *actualFrameCount = static_cast<size_t>(currentPtr - beginPtr) / mFrameSizeBytes;
+    return ::android::OK;
+}
+
+::android::status_t DriverOffloadStubImpl::handlePcmTransfer(void* /*buffer*/, size_t frameCount,
+                                                             size_t* actualFrameCount) {
+    *actualFrameCount = frameCount;
+    std::lock_guard l(mState.lock);
+    mState.clips.updateLastFrames(frameCount);
     return ::android::OK;
 }
 
@@ -235,6 +351,7 @@ void DriverOffloadStubImpl::shutdown() {
 const std::set<std::string>& StreamOffloadStub::getSupportedEncodings() {
     static const std::set<std::string> kSupportedEncodings = {
             "audio/x-ape",
+            "audio/mpeg",
     };
     return kSupportedEncodings;
 }
