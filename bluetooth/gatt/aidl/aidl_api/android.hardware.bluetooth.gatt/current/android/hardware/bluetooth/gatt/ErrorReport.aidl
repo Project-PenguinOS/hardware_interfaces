@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 The Android Open Source Project
+ * Copyright (C) 2025 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,22 +31,18 @@
 // with such a backward incompatible change, it has a high risk of breaking
 // later when a module using the interface is updated, e.g., Mainline modules.
 
-package android.hardware.radio.messaging;
-/* @hide */
+package android.hardware.bluetooth.gatt;
 @VintfStability
-interface IRadioMessagingIndication {
-  /**
-   * @deprecated Legacy CDMA is unsupported.
-   */
-  oneway void cdmaNewSms(in android.hardware.radio.RadioIndicationType type, in android.hardware.radio.messaging.CdmaSmsMessage msg);
-  /**
-   * @deprecated Legacy CDMA is unsupported.
-   */
-  oneway void cdmaRuimSmsStorageFull(in android.hardware.radio.RadioIndicationType type);
-  oneway void newBroadcastSms(in android.hardware.radio.RadioIndicationType type, in byte[] data);
-  oneway void newSms(in android.hardware.radio.RadioIndicationType type, in byte[] pdu);
-  oneway void newSmsOnSim(in android.hardware.radio.RadioIndicationType type, in int recordNumber);
-  oneway void newSmsStatusReport(in android.hardware.radio.RadioIndicationType type, in byte[] pdu);
-  oneway void simSmsStorageFull(in android.hardware.radio.RadioIndicationType type);
-  oneway void newSecureSms(in android.hardware.radio.RadioIndicationType type, in byte[] pdu, in android.hardware.radio.network.NetworkSecurityEvent event);
+parcelable ErrorReport {
+  int aclConnectionHandle;
+  int localCid;
+  android.hardware.bluetooth.gatt.ErrorReport.Error error;
+  String reason;
+  @Backing(type="int") @VintfStability
+  enum Error {
+    UNKNOWN,
+    DATABASE_OUT_OF_SYNC,
+    RESPONSE_TIMEOUT,
+    PROTOCOL_VIOLATION,
+  }
 }
