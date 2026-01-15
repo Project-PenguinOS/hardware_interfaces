@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024 The Android Open Source Project
+ * Copyright (C) 2026 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,18 +33,12 @@
 
 package android.hardware.tv.mediaquality;
 @RustDerive(Clone=true, Eq=true, PartialEq=true) @VintfStability
-parcelable DolbyAudioProcessing {
-  android.hardware.tv.mediaquality.DolbyAudioProcessing.SoundMode soundMode;
-  boolean volumeLeveler;
-  boolean surroundVirtualizer;
-  boolean dolbyAtmos;
-  enum SoundMode {
-    GAME,
-    MOVIE,
-    MUSIC,
-    NEWS,
-    STADIUM,
-    STANDARD,
-    USER,
-  }
+parcelable DtsVirtualXCapabilities {
+  boolean isTbHdxSupported;
+  boolean isLimiterSupported;
+  boolean isTruSurroundXSupported;
+  boolean isTruVolumeHdSupported;
+  boolean isDialogClaritySupported;
+  boolean isDefinitionSupported;
+  boolean isHeightSupported;
 }

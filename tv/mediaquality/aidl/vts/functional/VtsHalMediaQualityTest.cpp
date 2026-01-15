@@ -23,6 +23,10 @@
 #include <aidl/android/hardware/tv/mediaquality/BnPictureProfileAdjustmentListener.h>
 #include <aidl/android/hardware/tv/mediaquality/BnSoundProfileAdjustmentListener.h>
 #include <aidl/android/hardware/tv/mediaquality/CommonParamCapability.h>
+#include <aidl/android/hardware/tv/mediaquality/DolbyAudioProcessing.h>
+#include <aidl/android/hardware/tv/mediaquality/DolbyAudioProcessingCapabilities.h>
+#include <aidl/android/hardware/tv/mediaquality/DtsVirtualX.h>
+#include <aidl/android/hardware/tv/mediaquality/DtsVirtualXCapabilities.h>
 #include <aidl/android/hardware/tv/mediaquality/EqualizerBand.h>
 #include <aidl/android/hardware/tv/mediaquality/EqualizerCapabilities.h>
 #include <aidl/android/hardware/tv/mediaquality/EqualizerDetail.h>
@@ -54,6 +58,10 @@ using aidl::android::hardware::tv::mediaquality::BnMediaQualityCallback;
 using aidl::android::hardware::tv::mediaquality::BnPictureProfileAdjustmentListener;
 using aidl::android::hardware::tv::mediaquality::BnSoundProfileAdjustmentListener;
 using aidl::android::hardware::tv::mediaquality::CommonParamCapability;
+using aidl::android::hardware::tv::mediaquality::DolbyAudioProcessing;
+using aidl::android::hardware::tv::mediaquality::DolbyAudioProcessingCapabilities;
+using aidl::android::hardware::tv::mediaquality::DtsVirtualX;
+using aidl::android::hardware::tv::mediaquality::DtsVirtualXCapabilities;
 using aidl::android::hardware::tv::mediaquality::EqualizerBand;
 using aidl::android::hardware::tv::mediaquality::EqualizerCapabilities;
 using aidl::android::hardware::tv::mediaquality::EqualizerDetail;
@@ -966,6 +974,101 @@ TEST_P(MediaQualityAidl, TestSendDefaultSoundProfile) {
 
     soundProfile.parameters = soundParameters;
     ASSERT_OK(mediaquality->sendDefaultSoundProfile(soundProfile));
+}
+
+TEST_P(MediaQualityAidl, TestGetDolbyAudioProcessingCapabilities) {
+    int32_t version = 0;
+    ASSERT_OK(mediaquality->getInterfaceVersion(&version));
+    if (version >= 3) {
+        DolbyAudioProcessingCapabilities capabilities;
+        ASSERT_OK(mediaquality->getDolbyAudioProcessingCapabilities(&capabilities));
+    } else {
+        ALOGD("TestGetDolbyAudioProcessingCapabilities "
+              "skipped due to interface version %d",
+              version);
+    }
+}
+
+TEST_P(MediaQualityAidl, TestGetDolbyAudioProcessingSettings) {
+    int32_t version = 0;
+    ASSERT_OK(mediaquality->getInterfaceVersion(&version));
+    if (version >= 3) {
+        DolbyAudioProcessing settings;
+        ASSERT_OK(mediaquality->getDolbyAudioProcessingSettings(&settings));
+    } else {
+        ALOGD("TestGetDolbyAudioProcessingSettings skipped due to interface version %d", version);
+    }
+}
+
+TEST_P(MediaQualityAidl, TestSetDolbyAudioProcessingSettings) {
+    int32_t version = 0;
+    ASSERT_OK(mediaquality->getInterfaceVersion(&version));
+    if (version >= 3) {
+        DolbyAudioProcessingCapabilities capabilities;
+        ASSERT_OK(mediaquality->getDolbyAudioProcessingCapabilities(&capabilities));
+
+        DolbyAudioProcessing testSettings;
+
+        if (!capabilities.supportedSoundModes.empty()) {
+            testSettings.soundMode = capabilities.supportedSoundModes[0];
+        } else {
+            ALOGD("TestSetDolbyAudioProcessingSettings: "
+                  "No supported sound modes reported, using default or skipping soundMode test.");
+        }
+
+        testSettings.volumeLeveler = capabilities.isVolumeLevelerSupported;
+        testSettings.surroundVirtualizer = capabilities.isSurroundVirtualizerSupported;
+        testSettings.dolbyAtmos = capabilities.isDolbyAtmosSupported;
+
+        ASSERT_OK(mediaquality->setDolbyAudioProcessingSettings(testSettings));
+    } else {
+        ALOGD("TestSetDolbyAudioProcessingSettings skipped due to interface version %d", version);
+    }
+}
+
+TEST_P(MediaQualityAidl, TestGetDtsVirtualXCapabilities) {
+    int32_t version = 0;
+    ASSERT_OK(mediaquality->getInterfaceVersion(&version));
+    if (version >= 3) {
+        DtsVirtualXCapabilities capabilities;
+        ASSERT_OK(mediaquality->getDtsVirtualXCapabilities(&capabilities));
+    } else {
+        ALOGD("TestGetDtsVirtualXCapabilities skipped due to interface version %d", version);
+    }
+}
+
+TEST_P(MediaQualityAidl, TestGetDtsVirtualXSettings) {
+    int32_t version = 0;
+    ASSERT_OK(mediaquality->getInterfaceVersion(&version));
+    if (version >= 3) {
+        DtsVirtualX settings;
+        ASSERT_OK(mediaquality->getDtsVirtualXSettings(&settings));
+    } else {
+        ALOGD("TestGetDtsVirtualXSettings skipped due to interface version %d", version);
+    }
+}
+
+TEST_P(MediaQualityAidl, TestSetDtsVirtualXSettings) {
+    int32_t version = 0;
+    ASSERT_OK(mediaquality->getInterfaceVersion(&version));
+    if (version >= 3) {
+        DtsVirtualXCapabilities capabilities;
+        ASSERT_OK(mediaquality->getDtsVirtualXCapabilities(&capabilities));
+
+        DtsVirtualX testSettings;
+
+        testSettings.tbHdx = capabilities.isTbHdxSupported;
+        testSettings.limiter = capabilities.isLimiterSupported;
+        testSettings.truSurroundX = capabilities.isTruSurroundXSupported;
+        testSettings.truVolumeHd = capabilities.isTruVolumeHdSupported;
+        testSettings.dialogClarity = capabilities.isDialogClaritySupported;
+        testSettings.definition = capabilities.isDefinitionSupported;
+        testSettings.height = capabilities.isHeightSupported;
+
+        ASSERT_OK(mediaquality->setDtsVirtualXSettings(testSettings));
+    } else {
+        ALOGD("TestSetDtsVirtualXSettings skipped due to interface version %d", version);
+    }
 }
 
 GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(MediaQualityAidl);
