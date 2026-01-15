@@ -3524,7 +3524,6 @@ wifi_error nan_bootstrapping_request(transaction_id id, wifi_interface_handle if
 wifi_error nan_bootstrapping_indication_response(transaction_id id, wifi_interface_handle iface,
                                                  NanBootstrappingIndicationResponse* msg);
 
-// QTI_BEGIN: 2025-12-30: WLAN: Add function prototypes for nan suspend and resume APIs
 /**@brief nan_suspend_request
  * Request that the specified NAN session be suspended.
  * @param transaction_id: NAN transaction id
@@ -3545,7 +3544,6 @@ wifi_error nan_suspend_request(transaction_id id, wifi_interface_handle iface,
 wifi_error nan_resume_request(transaction_id id, wifi_interface_handle iface,
                               NanResumeRequest *msg);
 
-// QTI_END: 2025-12-30: WLAN: Add function prototypes for nan suspend and resume APIs
 #ifdef __cplusplus
 }
 #endif /* __cplusplus */
