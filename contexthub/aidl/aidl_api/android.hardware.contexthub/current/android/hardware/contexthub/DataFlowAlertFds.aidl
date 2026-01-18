@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024 The Android Open Source Project
+ * Copyright (C) 2025 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,26 +33,8 @@
 
 package android.hardware.contexthub;
 @VintfStability
-parcelable EndpointInfo {
-  android.hardware.contexthub.EndpointId id;
-  android.hardware.contexthub.EndpointInfo.EndpointType type;
-  String name;
-  int version;
-  @nullable String tag;
-  String[] requiredPermissions;
-  android.hardware.contexthub.Service[] services;
-  @nullable android.hardware.contexthub.EndpointInfo.SharedDataSupportVersion sharedDataSupportVersion;
-  @Backing(type="int") @VintfStability
-  enum EndpointType {
-    FRAMEWORK = 1,
-    APP = 2,
-    NATIVE = 3,
-    NANOAPP = 4,
-    GENERIC = 5,
-  }
-  @VintfStability
-  parcelable SharedDataSupportVersion {
-    android.hardware.contexthub.SharedDataRegion.Version version;
-    byte minimumCompatibleMajorVersion;
-  }
+parcelable DataFlowAlertFds {
+  ParcelFileDescriptor waking;
+  ParcelFileDescriptor nonWaking;
+  @nullable ParcelFileDescriptor halAck;
 }
