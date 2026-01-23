@@ -179,6 +179,7 @@ class GraphicsTestsBase {
     }
 
   public:
+    int32_t getIAllocatorVersion() const { return mIAllocatorVersion; }
     AIMapper_loadIMapperFn getIMapperLoader() const { return mIMapperLoader; }
     int32_t* getHalVersion() const { return mIMapperHALVersion; }
 
@@ -196,6 +197,53 @@ class GraphicsTestsBase {
             return std::make_unique<BufferAllocation>(mIMapper, dupFromAidl(result.buffers[0]),
                                                       result.stride, descriptorInfo);
         }
+    }
+
+    // Array-based wrapper: allocate multi-view using a C-array of descriptors.
+    std::unique_ptr<BufferAllocation> allocateMultiView(
+            const std::vector<BufferDescriptorInfo>& descriptors, int baseViewIndex) {
+        if (descriptors.empty()) {
+            ADD_FAILURE() << "allocateMultiView called with null or empty descriptor array";
+            return nullptr;
+        }
+
+        // If allocator interface version is insufficient, fall back to single-view allocate2.
+        if (mIAllocatorVersion < 3) {
+            ADD_FAILURE() << "allocateMultiView called but IAllocator isn't V3 or higher";
+            return nullptr;
+        }
+
+        AllocationResult result;
+        ::ndk::ScopedAStatus status = mAllocator->allocateMultiView(
+                descriptors, static_cast<int32_t>(baseViewIndex), &result);
+        if (!status.isOk()) {
+            status_t error = status.getExceptionCode();
+            if (error == EX_SERVICE_SPECIFIC) {
+                error = status.getServiceSpecificError();
+                EXPECT_NE(OK, error) << "Failed to set error properly";
+            } else {
+                EXPECT_EQ(OK, error) << "Allocation transport failure";
+            }
+            return nullptr;
+        } else {
+            size_t idx =
+                    (baseViewIndex < 0 || static_cast<size_t>(baseViewIndex) >= descriptors.size())
+                            ? 0
+                            : static_cast<size_t>(baseViewIndex);
+            // allocateMultiView returns a single multi-view buffer in result.buffers[0].
+            return std::make_unique<BufferAllocation>(mIMapper, dupFromAidl(result.buffers[0]),
+                                                      result.stride, descriptors[idx]);
+        }
+    }
+
+    bool isMultiViewSupported(const std::vector<BufferDescriptorInfo>& descriptors,
+                              int baseViewIndex) {
+        if (mIAllocatorVersion < 3) {
+            return false;
+        }
+        bool ret = false;
+        EXPECT_TRUE(mAllocator->isMultiViewSupported(descriptors, baseViewIndex, &ret).isOk());
+        return ret;
     }
 
     std::unique_ptr<BufferAllocation> allocateGeneric() {
@@ -574,6 +622,7 @@ class GraphicsTestsBase {
             case PixelFormat::RAW_OPAQUE:
             case PixelFormat::RAW10:
             case PixelFormat::RAW12:
+            case PixelFormat::RAW14:
             case PixelFormat::Y8:
             case PixelFormat::Y16:
             case PixelFormat::YV12:
@@ -640,6 +689,7 @@ class GraphicsTestsBase {
             case PixelFormat::RAW_OPAQUE:
             case PixelFormat::RAW10:
             case PixelFormat::RAW12:
+            case PixelFormat::RAW14:
             case PixelFormat::Y8:
             case PixelFormat::Y16:
             case PixelFormat::YV12:
@@ -769,6 +819,7 @@ class GraphicsTestsBase {
             case PixelFormat::RAW_OPAQUE:
             case PixelFormat::RAW10:
             case PixelFormat::RAW12:
+            case PixelFormat::RAW14:
             case PixelFormat::Y8:
             case PixelFormat::Y16:
             case PixelFormat::YV12:
@@ -824,6 +875,7 @@ class GraphicsTestsBase {
             case PixelFormat::RAW_OPAQUE:
             case PixelFormat::RAW10:
             case PixelFormat::RAW12:
+            case PixelFormat::RAW14:
             case PixelFormat::Y8:
             case PixelFormat::Y16:
             case PixelFormat::YV12:
@@ -881,6 +933,7 @@ class GraphicsMapperStableCRgbaLockTests
             case PixelFormat::RAW_OPAQUE:
             case PixelFormat::RAW10:
             case PixelFormat::RAW12:
+            case PixelFormat::RAW14:
             case PixelFormat::RGBA_1010102:
             case PixelFormat::Y8:
             case PixelFormat::Y16:
@@ -939,6 +992,16 @@ TEST_P(GraphicsMapperStableCTests, AllV5CallbacksDefined) {
     EXPECT_TRUE(mapper()->v5.getReservedRegion);
 }
 
+TEST_P(GraphicsMapperStableCTests, AllV6CallbacksDefined) {
+    if (mapper()->version < AIMAPPER_VERSION_6) {
+        GTEST_SKIP() << "IMapper is not 6+";
+    }
+
+    EXPECT_TRUE(mapper()->v6.getBaseView);
+    EXPECT_TRUE(mapper()->v6.importViewBuffer);
+    EXPECT_TRUE(mapper()->v6.getMultiViewInfo);
+}
+
 TEST_P(GraphicsMapperStableCTests, DualLoadIsIdentical) {
     ASSERT_GE(mapper()->version, AIMAPPER_VERSION_5);
     AIMapper* secondMapper;
@@ -958,6 +1021,147 @@ TEST_P(GraphicsMapperStableCTests, DualLoadIsIdentical) {
     EXPECT_EQ(secondMapper->v5.listSupportedMetadataTypes, mapper()->v5.listSupportedMetadataTypes);
     EXPECT_EQ(secondMapper->v5.dumpBuffer, mapper()->v5.dumpBuffer);
     EXPECT_EQ(secondMapper->v5.getReservedRegion, mapper()->v5.getReservedRegion);
+}
+
+TEST_P(GraphicsMapperStableCTests, DualLoadV6IsIdentical) {
+    if (mapper()->version < AIMAPPER_VERSION_6) {
+        GTEST_SKIP() << "IMapper is not 6+";
+    }
+    AIMapper* secondMapper;
+    ASSERT_EQ(AIMAPPER_ERROR_NONE, getIMapperLoader()(&secondMapper));
+
+    EXPECT_EQ(secondMapper->v6.getBaseView, mapper()->v6.getBaseView);
+    EXPECT_EQ(secondMapper->v6.importViewBuffer, mapper()->v6.importViewBuffer);
+    EXPECT_EQ(secondMapper->v6.getMultiViewInfo, mapper()->v6.getMultiViewInfo);
+}
+
+TEST_P(GraphicsMapperStableCTests, GetBaseView) {
+    if (mapper()->version < AIMAPPER_VERSION_6) {
+        GTEST_SKIP() << "IMapper is not 6+";
+    }
+    if (getIAllocatorVersion() < 3) {
+        GTEST_SKIP() << "IAllocator version is " << getIAllocatorVersion()
+                     << ", but version 3 is required for multi-view allocation.";
+    }
+
+    BufferDescriptorInfo desc{
+            .name = {"VTS_TEMP"},
+            .width = 2121,
+            .height = 1212,
+            .layerCount = 1,
+            .format = PixelFormat::RGBA_8888,
+            .usage = BufferUsage::CPU_WRITE_OFTEN,
+            .reservedSize = 0,
+    };
+    std::vector<BufferDescriptorInfo> descs = {desc};
+    if (!isMultiViewSupported(descs, 1)) {
+        GTEST_SKIP() << "Multi-view allocation is not supported for the given descriptor.";
+    }
+    auto buffer = allocateMultiView(descs, 0);
+
+    ASSERT_NE(nullptr, buffer.get());
+    EXPECT_GE(buffer->stride(), 64);
+
+    uint32_t base_view = 0;
+    auto bufferHandle = buffer->import();
+    ASSERT_TRUE(bufferHandle);
+
+    int result = mapper()->v6.getBaseView(*bufferHandle, &base_view);
+    EXPECT_EQ(AIMAPPER_ERROR_NONE, result);
+    EXPECT_EQ(base_view, 1);
+    ASSERT_EQ(AIMAPPER_ERROR_NONE, result);
+}
+
+TEST_P(GraphicsMapperStableCTests, ImportViewBuffer) {
+    if (mapper()->version < AIMAPPER_VERSION_6) {
+        GTEST_SKIP() << "IMapper is not 6+";
+    }
+    if (getIAllocatorVersion() < 3) {
+        GTEST_SKIP() << "IAllocator version is " << getIAllocatorVersion()
+                     << ", but version 3 is required for multi-view allocation.";
+    }
+
+    BufferDescriptorInfo desc{
+            .name = {"VTS_TEMP"},
+            .width = 2121,
+            .height = 1212,
+            .layerCount = 1,
+            .format = PixelFormat::RGBA_8888,
+            .usage = BufferUsage::CPU_WRITE_OFTEN,
+            .reservedSize = 0,
+    };
+    std::vector<BufferDescriptorInfo> descs = {desc};
+    if (!isMultiViewSupported(descs, 1)) {
+        GTEST_SKIP() << "Multi-view allocation is not supported for the given descriptor.";
+    }
+    auto buffer = allocateMultiView(descs, 0);
+
+    ASSERT_NE(nullptr, buffer.get());
+    EXPECT_GE(buffer->stride(), 64);
+
+    uint32_t base_view = 0;
+    auto bufferHandle = buffer->import();
+    ASSERT_TRUE(bufferHandle);
+
+    int result = mapper()->v6.getBaseView(*bufferHandle, &base_view);
+    EXPECT_EQ(AIMAPPER_ERROR_NONE, result);
+    EXPECT_EQ(base_view, 1);
+    ASSERT_EQ(AIMAPPER_ERROR_NONE, result);
+
+    buffer_handle_t raw_hnd_1 = nullptr;
+    result = mapper()->v6.importViewBuffer(*bufferHandle, base_view, &raw_hnd_1);
+    EXPECT_EQ(AIMAPPER_ERROR_NONE, result);
+    EXPECT_NE(nullptr, raw_hnd_1);
+    BufferHandle hnd_1(mapper(), const_cast<native_handle_t*>(raw_hnd_1));
+    EXPECT_TRUE(hnd_1);
+}
+
+TEST_P(GraphicsMapperStableCTests, GetMultiViewInfo) {
+    if (mapper()->version < AIMAPPER_VERSION_6) {
+        GTEST_SKIP() << "IMapper is not 6+";
+    }
+    if (getIAllocatorVersion() < 3) {
+        GTEST_SKIP() << "IAllocator version is " << getIAllocatorVersion()
+                     << ", but version 3 is required for multi-view allocation.";
+    }
+
+    BufferDescriptorInfo desc{
+            .name = {"VTS_TEMP"},
+            .width = 2121,
+            .height = 1212,
+            .layerCount = 1,
+            .format = PixelFormat::RGBA_8888,
+            .usage = BufferUsage::CPU_WRITE_OFTEN,
+            .reservedSize = 0,
+    };
+    std::vector<BufferDescriptorInfo> descs = {desc};
+    if (!isMultiViewSupported(descs, 1)) {
+        GTEST_SKIP() << "Multi-view allocation is not supported for the given descriptor.";
+    }
+    auto buffer = allocateMultiView(descs, 0);
+
+    ASSERT_NE(nullptr, buffer.get());
+    EXPECT_GE(buffer->stride(), 64);
+
+    size_t numberOfViews = 0;
+    const uint32_t* viewListPtr = nullptr;
+
+    auto bufferHandle = buffer->import();
+    ASSERT_TRUE(bufferHandle);
+
+    int result = mapper()->v6.getMultiViewInfo(*bufferHandle, &viewListPtr, &numberOfViews);
+    ASSERT_EQ(numberOfViews, 2);
+
+    std::vector<uint32_t> viewList(numberOfViews);
+    viewListPtr = viewList.data();
+
+    result = mapper()->v6.getMultiViewInfo(*bufferHandle, &viewListPtr, &numberOfViews);
+    ASSERT_EQ(AIMAPPER_ERROR_NONE, result);
+    ASSERT_NE(nullptr, viewListPtr);
+
+    // View Validation
+    EXPECT_EQ(viewListPtr[0], 1);
+    EXPECT_EQ(viewListPtr[1], 2);
 }
 
 TEST_P(GraphicsMapperStableCTests, CanAllocate) {
@@ -1421,6 +1625,56 @@ TEST_P(GraphicsMapperStableCTests, Lock_RAW12) {
     if (!buffer) {
         ASSERT_FALSE(isSupported(info));
         GTEST_SUCCEED() << "RAW12 format is unsupported";
+        return;
+    }
+
+    // lock buffer for writing
+    const ARect region{0, 0, info.width, info.height};
+    auto handle = buffer->import();
+    uint8_t* data = nullptr;
+    ASSERT_EQ(AIMAPPER_ERROR_NONE, mapper()->v5.lock(*handle, static_cast<int64_t>(info.usage),
+                                                     region, -1, (void**)&data));
+
+    auto decodeResult = getStandardMetadata<StandardMetadataType::PLANE_LAYOUTS>(*handle);
+    ASSERT_TRUE(decodeResult.has_value());
+    const auto& planeLayouts = *decodeResult;
+
+    ASSERT_EQ(1, planeLayouts.size());
+    auto planeLayout = planeLayouts[0];
+
+    EXPECT_EQ(0, planeLayout.sampleIncrementInBits);
+    EXPECT_EQ(1, planeLayout.horizontalSubsampling);
+    EXPECT_EQ(1, planeLayout.verticalSubsampling);
+
+    ASSERT_EQ(1, planeLayout.components.size());
+    auto planeLayoutComponent = planeLayout.components[0];
+
+    EXPECT_EQ(PlaneLayoutComponentType::RAW,
+              static_cast<PlaneLayoutComponentType>(planeLayoutComponent.type.value));
+    EXPECT_EQ(0, planeLayoutComponent.offsetInBits % 8);
+    EXPECT_EQ(-1, planeLayoutComponent.sizeInBits);
+
+    int releaseFence = -1;
+    ASSERT_EQ(AIMAPPER_ERROR_NONE, mapper()->v5.unlock(*handle, &releaseFence));
+    if (releaseFence != -1) {
+        close(releaseFence);
+    }
+}
+
+TEST_P(GraphicsMapperStableCTests, Lock_RAW14) {
+    BufferDescriptorInfo info{
+            .name = {"VTS_TEMP"},
+            .width = 64,
+            .height = 64,
+            .layerCount = 1,
+            .format = PixelFormat::RAW14,
+            .usage = BufferUsage::CPU_WRITE_OFTEN | BufferUsage::CPU_READ_OFTEN,
+            .reservedSize = 0,
+    };
+    auto buffer = allocate(info, false);
+    if (!buffer) {
+        ASSERT_FALSE(isSupported(info));
+        GTEST_SUCCEED() << "RAW14 format is unsupported";
         return;
     }
 
@@ -2326,6 +2580,7 @@ INSTANTIATE_TEST_CASE_P(PerInstance, GraphicsMapperStableCTests,
                                     std::to_string(info.index) + "/" + std::get<0>(info.param);
                             return Sanitize(name);
                         });
+
 GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(GraphicsMapperStableCRgbaLockTests);
 INSTANTIATE_TEST_CASE_P(
         PerInstance, GraphicsMapperStableCRgbaLockTests,

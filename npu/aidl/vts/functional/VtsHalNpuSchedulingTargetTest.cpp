@@ -320,6 +320,23 @@ TEST_P(NpuSchedulingAidl, SetSchedulingConfigsInvalidPriority) {
 }
 
 /*
+ * Tests that setSchedulingConfigs() rejects multiple configs for the same UID
+ */
+TEST_P(NpuSchedulingAidl, SetSchedulingConfigsDuplicateUid) {
+    std::vector<SchedulingConfig> configs = {
+            {.uid = 1001, .priority = 0, .hasDirectAccess = true, .canAttributeOtherUid = false},
+            {.uid = 1001,
+             .priority = 1000,
+             .hasDirectAccess = true,
+             .canAttributeOtherUid = false}};
+
+    auto status = scheduling->setSchedulingConfigs(configs);
+    ASSERT_FALSE(status.isOk()) << "setSchedulingConfigs with multiple configs for the same UID "
+                                   "must return EX_ILLEGAL_ARGUMENT";
+    ASSERT_EQ(status.getExceptionCode(), EX_ILLEGAL_ARGUMENT);
+}
+
+/*
  * Tests that updateSchedulingConfigs() works with valid input
  */
 TEST_P(NpuSchedulingAidl, UpdateSchedulingConfigs) {
@@ -456,12 +473,33 @@ TEST_P(NpuSchedulingAidl, RunInferenceEffectivePriority) {
  * Tests that the highest priority work finishes first
  */
 TEST_P(NpuSchedulingAidl, RunInferencesPrioritized) {
+    const int lowUid = 10000;
+    const int lowAppPriority = 1000;
+    const int lowJobPriority = 1000;
+
+    const int highUid = 10001;
+    const int highAppPriority = 0;
+    const int highJobPriority = 0;
+
+    int lowEffectivePriority = 0;
+    int highEffectivePriority = 0;
+
+    std::vector<SchedulingConfig> configs = {{.uid = lowUid,
+                                              .priority = lowAppPriority,
+                                              .hasDirectAccess = true,
+                                              .canAttributeOtherUid = false},
+                                             {.uid = highUid,
+                                              .priority = highAppPriority,
+                                              .hasDirectAccess = true,
+                                              .canAttributeOtherUid = false}};
+    ASSERT_TRUE(scheduling->setSchedulingConfigs(configs).isOk());
+
     auto callback = ndk::SharedRefBase::make<SchedulingCallback>();
     ASSERT_TRUE(scheduling->setCallback(callback).isOk());
 
-    auto first = runner->runInferenceAsync({.priority = 500});
-    std::this_thread::sleep_for(50ms);
-    auto second = runner->runInferenceAsync({.priority = 250});
+    auto first = runner->runInferenceAsync({.priority = lowJobPriority});
+    std::this_thread::sleep_for(100ms);
+    auto second = runner->runInferenceAsync({.priority = highJobPriority});
 
     auto completed = raceFutures<bool>({&first, &second});
     std::list<std::future<bool>*> expected = {&second, &first};

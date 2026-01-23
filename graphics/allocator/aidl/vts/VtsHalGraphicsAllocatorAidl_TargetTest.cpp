@@ -329,12 +329,19 @@ TEST_P(GraphicsAllocatorAidlTests, RejectsUnknownUsages) {
     }
 
     constexpr auto FirstInvalidV2Usage = static_cast<BufferUsage>(1LL << 33);
+    constexpr auto FirstInvalidV3Usage = static_cast<BufferUsage>(1LL << 34);
 
     BufferUsage invalidUsage;
-    if (allocatorVersion() == 2) {
-        invalidUsage = FirstInvalidV2Usage;
-    } else {
-        GTEST_FAIL() << "Unknown version " << allocatorVersion();
+    switch (allocatorVersion()) {
+        case 3:
+            invalidUsage = FirstInvalidV3Usage;
+            break;
+        case 2:
+            invalidUsage = FirstInvalidV2Usage;
+            break;
+        default:
+            GTEST_FAIL() << "Unknown version " << allocatorVersion();
+            return;
     }
 
     BufferDescriptorInfo info{

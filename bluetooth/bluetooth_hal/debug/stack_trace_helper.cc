@@ -20,8 +20,7 @@
 #include "android-base/logging.h"
 #include "bluetooth_hal/bqr/bqr_types.h"
 
-namespace bluetooth_hal {
-namespace debug {
+namespace bluetooth_hal::debug {
 
 using ::bluetooth_hal::bqr::BqrErrorCode;
 
@@ -94,10 +93,6 @@ void HostAccelatedBtInitFailed(std::string msg) { LOG(FATAL) << msg; }
 
 void HostAccelatedBtShutdownFailed(std::string msg) { LOG(FATAL) << msg; }
 
-void ChreArbitratorUnimplementedPacket(std::string msg) { LOG(FATAL) << msg; }
-
-void ChreArbitratorInvalidPacketSize(std::string msg) { LOG(FATAL) << msg; }
-
 ErrorCodeMap kErrorCodeMap[]{
     {BqrErrorCode::kUartParsing, UartParsing},
     {BqrErrorCode::kUartIncompletePacket, UartIncompletePacket},
@@ -133,11 +128,7 @@ ErrorCodeMap kErrorCodeMap[]{
     {BqrErrorCode::kHostBdaddrFault, HostBdaddrFault},
     {BqrErrorCode::kHostOpenCoexDeviceError, HostCoexDeviceOpenError},
     {BqrErrorCode::kHostAccelBtInitFailed, HostAccelatedBtInitFailed},
-    {BqrErrorCode::kHostAccelBtShutdownFailed, HostAccelatedBtShutdownFailed},
-    {BqrErrorCode::kChreArbitratorUnimplementedPacket,
-     ChreArbitratorUnimplementedPacket},
-    {BqrErrorCode::kChreArbitratorInvalidPacketSize,
-     ChreArbitratorInvalidPacketSize}};
+    {BqrErrorCode::kHostAccelBtShutdownFailed, HostAccelatedBtShutdownFailed}};
 
 void LogFatal(BqrErrorCode error_code, std::string extra_info) {
   int size = (int)(sizeof(kErrorCodeMap) / sizeof(ErrorCodeMap));
@@ -157,5 +148,4 @@ void LogFatal(BqrErrorCode error_code, std::string extra_info) {
   LOG(FATAL) << msg;
 }
 
-}  // namespace debug
-}  // namespace bluetooth_hal
+}  // namespace bluetooth_hal::debug

@@ -47,6 +47,8 @@
 #include <aidl/android/media/audio/common/AudioMMapPolicyInfo.h>
 #include <aidl/android/media/audio/common/AudioMMapPolicyType.h>
 #include <aidl/android/media/audio/common/AudioOutputFlags.h>
+#include <aidl/android/media/audio/common/FlushFromFrameAccuracy.h>
+#include <aidl/android/media/audio/common/FlushFromFrameSupport.h>
 #include <android-base/chrono_utils.h>
 #include <android/binder_enums.h>
 #include <audio_utils/Statistics.h>
@@ -118,6 +120,8 @@ using aidl::android::media::audio::common::AudioSource;
 using aidl::android::media::audio::common::AudioUsage;
 using aidl::android::media::audio::common::Boolean;
 using aidl::android::media::audio::common::Float;
+using aidl::android::media::audio::common::FlushFromFrameAccuracy;
+using aidl::android::media::audio::common::FlushFromFrameSupport;
 using aidl::android::media::audio::common::Int;
 using aidl::android::media::audio::common::MicrophoneDynamicInfo;
 using aidl::android::media::audio::common::MicrophoneInfo;
@@ -788,7 +792,8 @@ class StreamContext {
     typedef AidlMessageQueue<int8_t, SynchronizedReadWrite> DataMQ;
 
     explicit StreamContext(const StreamDescriptor& descriptor, const AudioConfigBase& config,
-                           AudioIoFlags flags)
+                           AudioIoFlags flags,
+                           FlushFromFrameSupport support = FlushFromFrameSupport::UNSUPPORTED)
         : mFrameSizeBytes(descriptor.frameSizeBytes),
           mConfig(config),
           mCommandMQ(new CommandMQ(descriptor.command)),
@@ -798,7 +803,8 @@ class StreamContext {
           mDataMQ(maybeCreateDataMQ(descriptor)),
           mIsMmapped(isMmapped(descriptor)),
           mMmapBurstSizeFrames(getMmapBurstSizeFrames(descriptor)),
-          mSharedMemoryFd(maybeGetMmapFd(descriptor)) {}
+          mSharedMemoryFd(maybeGetMmapFd(descriptor)),
+          mFlushFromFrameSupport(support) {}
     void checkIsValid() const {
         EXPECT_NE(0UL, mFrameSizeBytes);
         ASSERT_NE(nullptr, mCommandMQ);
@@ -828,6 +834,7 @@ class StreamContext {
     bool isMmapped() const { return mIsMmapped; }
     int32_t getMmapBurstSizeFrames() const { return mMmapBurstSizeFrames; }
     int getMmapFd() const { return mSharedMemoryFd; }
+    FlushFromFrameSupport getFlushFromFrameSupport() const { return mFlushFromFrameSupport; }
 
   private:
     static std::unique_ptr<DataMQ> maybeCreateDataMQ(const StreamDescriptor& descriptor) {
@@ -866,6 +873,7 @@ class StreamContext {
     const bool mIsMmapped;
     const int32_t mMmapBurstSizeFrames;
     const int32_t mSharedMemoryFd;  // owned by StreamDescriptor
+    const FlushFromFrameSupport mFlushFromFrameSupport;
 };
 
 struct StreamWorkerMethods {
@@ -1027,6 +1035,10 @@ struct StateSequence {
 // thus "state" is the "from" state.
 using StateTransitionFrom = std::pair<StreamDescriptor::State, TransitionTrigger>;
 
+// Valid values are FlushFromFrameAccuracy::BEST_EFFORT(0) and
+// FlushFromFrameAccuracy::EXACT(1).
+static constexpr int kInvalidFlushFromFrameAccuracy = 2;
+
 static const StreamDescriptor::Command kGetStatusCommand =
         StreamDescriptor::Command::make<StreamDescriptor::Command::Tag::getStatus>(Void{});
 static const StreamDescriptor::Command kStartCommand =
@@ -1048,6 +1060,17 @@ static const StreamDescriptor::Command kPauseCommand =
         StreamDescriptor::Command::make<StreamDescriptor::Command::Tag::pause>(Void{});
 static const StreamDescriptor::Command kFlushCommand =
         StreamDescriptor::Command::make<StreamDescriptor::Command::Tag::flush>(Void{});
+static const StreamDescriptor::Command kFlushFromFrameBestEffortCommand =
+        StreamDescriptor::Command::make<StreamDescriptor::Command::Tag::flushFromFrame>(
+                static_cast<int>(FlushFromFrameAccuracy::BEST_EFFORT)
+                << StreamDescriptor::FLUSH_FROM_FRAME_POSITION_BITS);
+static const StreamDescriptor::Command kFlushFromFrameExactCommand =
+        StreamDescriptor::Command::make<StreamDescriptor::Command::Tag::flushFromFrame>(
+                static_cast<int>(FlushFromFrameAccuracy::EXACT)
+                << StreamDescriptor::FLUSH_FROM_FRAME_POSITION_BITS);
+static const StreamDescriptor::Command kInvalidFlushFromFrameCommand =
+        StreamDescriptor::Command::make<StreamDescriptor::Command::Tag::flushFromFrame>(
+                kInvalidFlushFromFrameAccuracy << StreamDescriptor::FLUSH_FROM_FRAME_POSITION_BITS);
 static const StreamEventReceiver::Event kTransferReadyEvent =
         StreamEventReceiver::Event::TransferReady;
 static const StreamEventReceiver::Event kDrainReadyEvent = StreamEventReceiver::Event::DrainReady;
@@ -1371,7 +1394,8 @@ class StreamWriterLogic : public StreamCommonLogic {
   public:
     StreamWriterLogic(const StreamContext& context, StreamLogicDriver* driver,
                       StreamWorkerMethods* stream, StreamEventReceiver* eventReceiver)
-        : StreamCommonLogic(context, driver, stream, eventReceiver) {}
+        : StreamCommonLogic(context, driver, stream, eventReceiver),
+          mFlushFromFrameSupport(context.getFlushFromFrameSupport()) {}
     // Should only be called after the worker has joined.
     using StreamCommonLogic::getBurstOccurrences;
     using StreamCommonLogic::getData;
@@ -1457,7 +1481,7 @@ class StreamWriterLogic : public StreamCommonLogic {
         if (getDriver()->interceptRawReply(reply)) {
             return Status::CONTINUE;
         }
-        if (reply.status != STATUS_OK) {
+        if (reply.status != STATUS_OK && !ignoreFlushFromFrameReplyError(command, reply)) {
             LOG(ERROR) << __func__ << ": received error status: " << statusToString(reply.status);
             return Status::ABORT;
         }
@@ -1518,10 +1542,25 @@ class StreamWriterLogic : public StreamCommonLogic {
     }
 
   private:
+    bool ignoreFlushFromFrameReplyError(const StreamDescriptor::Command& command,
+                                        const StreamDescriptor::Reply& reply) {
+        if (command.getTag() != StreamDescriptor::Command::Tag::flushFromFrame) {
+            return false;
+        }
+        // Ignore the error the accuracy is EXACT and the HAL cannot flush from requested position.
+        return (mFlushFromFrameSupport == FlushFromFrameSupport::UNSUPPORTED &&
+                reply.status == STATUS_INVALID_OPERATION) ||
+               ((command.get<StreamDescriptor::Command::Tag::flushFromFrame>() >>
+                 StreamDescriptor::FLUSH_FROM_FRAME_POSITION_BITS) ==
+                        static_cast<int>(FlushFromFrameAccuracy::EXACT) &&
+                reply.status == STATUS_BAD_VALUE);
+    }
+
     int8_t mBurstIteration = 1;
     std::ifstream mCompressedMedia;
     size_t mCompressedMediaSize = 0;
     size_t mCompressedMediaPos = 0;
+    const FlushFromFrameSupport mFlushFromFrameSupport;
 };
 
 class DefaultStreamEventCallback
@@ -1683,7 +1722,12 @@ class WithStream : public StreamWorkerMethods {
         ASSERT_TRUE(config.sampleRate.has_value());
         ASSERT_TRUE(config.flags.has_value());
         const AudioConfigBase cfg{config.sampleRate->value, *config.channelMask, *config.format};
-        mContext.emplace(mDescriptor, cfg, config.flags.value());
+        FlushFromFrameSupport flushFromFrameSupport = FlushFromFrameSupport::UNSUPPORTED;
+        if (auto status = module->getFlushFromFrameSupport(config, &flushFromFrameSupport);
+            !status.isOk()) {
+            EXPECT_STATUS_OR_UNKNOWN_TRANSACTION(EX_UNSUPPORTED_OPERATION, status);
+        }
+        mContext.emplace(mDescriptor, cfg, config.flags.value(), flushFromFrameSupport);
         ASSERT_NO_FATAL_FAILURE(mContext.value().checkIsValid());
         ASSERT_IS_OK(mStream->getInterfaceVersion(&mInterfaceVersion));
         UpdateCallbackTimeout(*config.format, config.sampleRate->value);
@@ -2690,6 +2734,33 @@ TEST_P(AudioCoreModule, ExternalDevicePortRoutes) {
     }
 }
 
+TEST_P(AudioCoreModule, GetFlushFromFrameSupport) {
+    if (aidlVersion < kAidlVersion4) {
+        GTEST_SKIP() << "Current HAL version less than " << kAidlVersion4 << ". Skipping the test ";
+    }
+    AudioPortConfig portConfig;
+    portConfig.flags = std::nullopt;
+    portConfig.format = std::nullopt;
+    FlushFromFrameSupport support = FlushFromFrameSupport::UNSUPPORTED;
+    ndk::ScopedAStatus status = module->getFlushFromFrameSupport(portConfig, &support);
+    if (status.getExceptionCode() == EX_UNSUPPORTED_OPERATION) {
+        GTEST_SKIP() << "GetFlushFromFrameSupport is not supported";
+    }
+    ASSERT_STATUS(EX_ILLEGAL_ARGUMENT, module->getFlushFromFrameSupport(portConfig, &support))
+            << "when both flag and format are not specified";
+    auto outputFlags = AudioIoFlags::make<AudioIoFlags::output>(0);
+    portConfig.flags = outputFlags;
+    ASSERT_STATUS(EX_ILLEGAL_ARGUMENT, module->getFlushFromFrameSupport(portConfig, &support))
+            << "when format is not specified";
+    portConfig.flags = std::nullopt;
+    portConfig.format = AudioFormatDescription();
+    ASSERT_STATUS(EX_ILLEGAL_ARGUMENT, module->getFlushFromFrameSupport(portConfig, &support))
+            << "when flag is not specified";
+    portConfig.flags = outputFlags;
+    ASSERT_IS_OK(module->getFlushFromFrameSupport(portConfig, &support));
+    // No need to check 'support' value as the HAL is not mandatory to support it.
+}
+
 class RoutedPortsProfilesSnapshot {
   public:
     explicit RoutedPortsProfilesSnapshot(int32_t portId) : mPortId(portId) {}
@@ -3382,9 +3453,11 @@ class StreamLogicDriverInvalidCommand : public StreamLogicDriver {
         const size_t currentCommand = mNextCommand - 1;  // increased by getNextTrigger
         const bool isLastCommand = currentCommand == mCommands.size() - 1;
         // All but the last command should run correctly. The last command must return 'BAD_VALUE'
-        // status.
+        // status or 'INVALID_OPERATION' status if the command is 'flushFromFrame'.
         if ((!isLastCommand && reply.status != STATUS_OK) ||
-            (isLastCommand && reply.status != STATUS_BAD_VALUE)) {
+            (isLastCommand && reply.status != STATUS_BAD_VALUE &&
+             !(mCommands[currentCommand].getTag() == StreamDescriptor::Command::flushFromFrame &&
+               reply.status == STATUS_INVALID_OPERATION))) {
             std::string s = mCommands[currentCommand].toString();
             s.append(", ").append(statusToString(reply.status));
             mStatuses.push_back(std::move(s));
@@ -3851,6 +3924,7 @@ class StreamLogicDefaultDriver : public StreamLogicDriver {
         // For non-MMap, always return false to pass the validation.
         return mIsMmap ? mHardware.hasRetrogradePosition : false;
     }
+    int32_t getMaxLatencyMs() const { return mMaxLatencyMs; }
     std::string getUnexpectedStateTransition() const { return mUnexpectedTransition; }
 
     bool done() override { return mCommands->done(); }
@@ -3881,6 +3955,7 @@ class StreamLogicDefaultDriver : public StreamLogicDriver {
         if (mIsMmap) {
             mHardware.update(reply.hardware.frames);
         }
+        mMaxLatencyMs = std::max(mMaxLatencyMs, reply.latencyMs);
 
         auto expected = mCommands->getExpectedStates();
         if (expected.count(reply.state) == 0) {
@@ -3928,11 +4003,14 @@ class StreamLogicDefaultDriver : public StreamLogicDriver {
     std::optional<StreamDescriptor::State> mPreviousState;
     FramesCounter mObservable;
     FramesCounter mHardware;
+    int32_t mMaxLatencyMs = StreamDescriptor::LATENCY_UNKNOWN;
     std::string mUnexpectedTransition;
 };
 
+static constexpr size_t kDefaultBurstCount = 10;
 // Defined later together with state transition sequences.
-std::shared_ptr<StateSequence> makeBurstCommands(bool isSync, size_t burstCount = 10,
+std::shared_ptr<StateSequence> makeBurstCommands(bool isSync,
+                                                 size_t burstCount = kDefaultBurstCount,
                                                  bool standbyInputWhenDone = false);
 std::shared_ptr<StateSequence> makeSyncOutBurstStandbyCommands(size_t burstCount, size_t cycleCount,
                                                                int interCycleSleepNs);
@@ -4018,7 +4096,7 @@ class StreamFixtureWithWorker {
         return result;
     }
 
-    void SendBurstCommands(bool validatePosition = true, size_t burstCount = 10,
+    void SendBurstCommands(bool validatePosition = true, size_t burstCount = kDefaultBurstCount,
                            bool standbyInputWhenDone = false) {
         ASSERT_NO_FATAL_FAILURE(StartWorkerToSendBurstCommands(burstCount, standbyInputWhenDone));
         ASSERT_NO_FATAL_FAILURE(JoinWorkerAfterBurstCommands(validatePosition));
@@ -4035,7 +4113,8 @@ class StreamFixtureWithWorker {
         ASSERT_TRUE(mWorker->start());
     }
 
-    void StartWorkerToSendBurstCommands(size_t burstCount = 10, bool standbyInputWhenDone = false) {
+    void StartWorkerToSendBurstCommands(size_t burstCount = kDefaultBurstCount,
+                                        bool standbyInputWhenDone = false) {
         if (!IOTraits<Stream>::is_input) {
             ASSERT_FALSE(standbyInputWhenDone) << "standbyInputWhenDone only supported for input";
         }
@@ -4533,6 +4612,11 @@ class AudioStream : public AudioCoreModule {
         } else {
             sequences.emplace_back("DrainUnspecified",
                                    std::vector{kStartCommand, kBurstCommand, kDrainInCommand});
+            if (aidlVersion >= kAidlVersion4) {
+                sequences.emplace_back(
+                        "InvalidFlushFromFrameAccuracy",
+                        std::vector{kStartCommand, kBurstCommand, kInvalidFlushFromFrameCommand});
+            }
         }
         for (const auto& seq : sequences) {
             SCOPED_TRACE(std::string("Sequence ").append(seq.first));
@@ -5276,6 +5360,7 @@ TEST_P(AudioStreamOut, LatencyMode) {
     }
 }
 
+// @VsrTest = VSR-5.5-004|VSR-5.5-005
 TEST_P(AudioStreamOut, PlaybackRate) {
     static const auto kStatuses = {EX_NONE, EX_UNSUPPORTED_OPERATION};
     const auto offloadMixPorts =
@@ -5442,7 +5527,7 @@ enum {
     NAMED_CMD_CMDS,
     NAMED_CMD_VALIDATE_POS_INCREASE
 };
-enum class StreamTypeFilter { ANY, SYNC, ASYNC, OFFLOAD /*compress offload*/ };
+enum class StreamTypeFilter { ANY, SYNC, ASYNC, OFFLOAD /*compress offload*/, PCM_OFFLOAD };
 using NamedCommandSequence =
         std::tuple<std::string, int /*minInterfaceVersion*/, std::string /*featureProperty*/,
                    int /*cmdDelayMs*/, StreamTypeFilter, std::shared_ptr<StateSequence>,
@@ -5538,36 +5623,36 @@ class AudioStreamIo : public AudioCoreModuleBase,
                             isBitPositionFlagSet(portConfig.flags.value()
                                                          .template get<AudioIoFlags::Tag::output>(),
                                                  AudioOutputFlags::NON_BLOCKING);
-            const bool isCompressOffload =
+            const bool isOffload =
                     IOTraits<Stream>::is_input
                             ? false
                             : isBitPositionFlagSet(
                                       portConfig.flags.value()
                                               .template get<AudioIoFlags::Tag::output>(),
-                                      AudioOutputFlags::COMPRESS_OFFLOAD) &&
-                                      portConfig.format.value().type == AudioFormatType::NON_PCM;
+                                      AudioOutputFlags::COMPRESS_OFFLOAD);
+            const bool isCompressOffload =
+                    isOffload && portConfig.format.value().type == AudioFormatType::NON_PCM;
             if (auto streamType =
                         std::get<NAMED_CMD_STREAM_TYPE>(std::get<PARAM_CMD_SEQ>(GetParam()));
                 (isNonBlocking && streamType == StreamTypeFilter::SYNC) ||
                 (!isNonBlocking && streamType == StreamTypeFilter::ASYNC) ||
-                (!isCompressOffload && streamType == StreamTypeFilter::OFFLOAD)) {
+                (!isOffload && (streamType == StreamTypeFilter::OFFLOAD ||
+                                streamType == StreamTypeFilter::PCM_OFFLOAD))) {
                 continue;
             }
-            if (skipStreamIoTestForMixPortConfig(portConfig, aidlVersion)) {
+            const auto configBase = AudioConfigBase{portConfig.sampleRate->value,
+                                                    *portConfig.channelMask, *portConfig.format};
+            auto filesToTest = getMediaFileInfoForConfig(configBase);
+            if (skipStreamIoTestForMixPortConfig(portConfig, aidlVersion) ||
+                (isCompressOffload && filesToTest.empty())) {
                 skipped.emplace(port->id, port->name, port->flags, portConfig.format.value());
                 continue;
             }
+
             WithDebugFlags delayTransientStates = WithDebugFlags::createNested(*debug);
             delayTransientStates.flags().streamTransientStateDelayMs =
                     std::get<NAMED_CMD_DELAY_MS>(std::get<PARAM_CMD_SEQ>(GetParam()));
             ASSERT_NO_FATAL_FAILURE(delayTransientStates.SetUp(module.get()));
-
-            const auto configBase = AudioConfigBase{portConfig.sampleRate->value,
-                                                    *portConfig.channelMask, *portConfig.format};
-            auto filesToTest = getMediaFileInfoForConfig(configBase);
-            if (filesToTest.empty()) {
-                continue;
-            }
 
             if (isCompressOffload) {
                 for (const auto& fileInfo : filesToTest) {
@@ -5619,11 +5704,46 @@ class AudioStreamIo : public AudioCoreModuleBase,
         return !isTelephonyDeviceType(device.type.type);
     }
 
+    size_t CalculateMinBurstCount(const StreamContext* context, int32_t latencyMs) {
+        size_t burstSize = context->isMmapped() ? context->getMmapBurstSizeFrames()
+                                                : context->getBufferSizeFrames();
+        if (burstSize == 0 || context->getSampleRate() == 0) return 0;
+        const int32_t burstDurationMs =
+                durationMsFromFrameCount(burstSize, context->getSampleRate());
+        return static_cast<size_t>(std::ceil(static_cast<double>(latencyMs) / burstDurationMs)) + 2;
+    }
+
+    void RunWorker(StreamFixture<Stream>& stream, StreamLogicDefaultDriver& driver,
+                   typename IOTraits<Stream>::Worker& worker, bool validatePositionIncrease) {
+        LOG(DEBUG) << __func__ << ": starting worker...";
+        ASSERT_TRUE(worker.start());
+        LOG(DEBUG) << __func__ << ": joining worker...";
+        worker.join();
+        EXPECT_FALSE(worker.hasError()) << worker.getError();
+        EXPECT_EQ("", driver.getUnexpectedStateTransition());
+        if (ValidatePosition(stream.getDevice())) {
+            if (validatePositionIncrease) {
+                const size_t minBurstCount =
+                        CalculateMinBurstCount(stream.getStreamContext(), driver.getMaxLatencyMs());
+                if (minBurstCount != 0 && minBurstCount <= kDefaultBurstCount) {
+                    EXPECT_TRUE(driver.hasObservablePositionIncrease());
+                    EXPECT_TRUE(driver.hasHardwarePositionIncrease());
+                    LOG(DEBUG) << __func__ << ": maxLatencyMs " << driver.getMaxLatencyMs();
+                } else {
+                    LOG(INFO) << __func__ << ": skip position increase validation because "
+                              << "latency is too high: " << driver.getMaxLatencyMs() << " ms, "
+                              << "would require " << minBurstCount << " bursts";
+                }
+            }
+            EXPECT_FALSE(driver.hasObservableRetrogradePosition());
+            EXPECT_FALSE(driver.hasHardwareRetrogradePosition());
+        }
+    }
+
     // Set up a patch first, then open a stream.
     void RunStreamIoCommandsImplSeq1(const AudioPortConfig& portConfig,
                                      std::shared_ptr<StateSequence> commandsAndStates,
-                                     bool validatePositionIncrease,
-                                     const MediaFileInfo* fileInfo = nullptr) {
+                                     bool validatePositionIncrease, const MediaFileInfo* fileInfo) {
         StreamFixture<Stream> stream;
         ASSERT_NO_FATAL_FAILURE(stream.SetUpStreamForMixPortConfig(module.get(), moduleConfig.get(),
                                                                    portConfig, fileInfo));
@@ -5643,28 +5763,14 @@ class AudioStreamIo : public AudioCoreModuleBase,
             worker.setMediaFilePath(fileInfo->path);
         }
 
-        LOG(DEBUG) << __func__ << ": starting worker...";
-        ASSERT_TRUE(worker.start());
-        LOG(DEBUG) << __func__ << ": joining worker...";
-        worker.join();
-        EXPECT_FALSE(worker.hasError()) << worker.getError();
-        EXPECT_EQ("", driver.getUnexpectedStateTransition());
-        if (ValidatePosition(stream.getDevice())) {
-            if (validatePositionIncrease) {
-                EXPECT_TRUE(driver.hasObservablePositionIncrease());
-                EXPECT_TRUE(driver.hasHardwarePositionIncrease());
-            }
-            EXPECT_FALSE(driver.hasObservableRetrogradePosition());
-            EXPECT_FALSE(driver.hasHardwareRetrogradePosition());
-        }
+        ASSERT_NO_FATAL_FAILURE(RunWorker(stream, driver, worker, validatePositionIncrease));
     }
 
     // Open a stream, then set up a patch for it. Since first it is needed to get
     // the minimum buffer size, a preliminary patch is set up, then removed.
     void RunStreamIoCommandsImplSeq2(const AudioPortConfig& portConfig,
                                      std::shared_ptr<StateSequence> commandsAndStates,
-                                     bool validatePositionIncrease,
-                                     const MediaFileInfo* fileInfo = nullptr) {
+                                     bool validatePositionIncrease, const MediaFileInfo* fileInfo) {
         StreamFixture<Stream> stream;
         ASSERT_NO_FATAL_FAILURE(
                 stream.SetUpPatchForMixPortConfig(module.get(), moduleConfig.get(), portConfig));
@@ -5686,20 +5792,7 @@ class AudioStreamIo : public AudioCoreModuleBase,
         }
         ASSERT_NO_FATAL_FAILURE(stream.ReconnectPatch(module.get()));
 
-        LOG(DEBUG) << __func__ << ": starting worker...";
-        ASSERT_TRUE(worker.start());
-        LOG(DEBUG) << __func__ << ": joining worker...";
-        worker.join();
-        EXPECT_FALSE(worker.hasError()) << worker.getError();
-        EXPECT_EQ("", driver.getUnexpectedStateTransition());
-        if (ValidatePosition(stream.getDevice())) {
-            if (validatePositionIncrease) {
-                EXPECT_TRUE(driver.hasObservablePositionIncrease());
-                EXPECT_TRUE(driver.hasHardwarePositionIncrease());
-            }
-            EXPECT_FALSE(driver.hasObservableRetrogradePosition());
-            EXPECT_FALSE(driver.hasHardwareRetrogradePosition());
-        }
+        ASSERT_NO_FATAL_FAILURE(RunWorker(stream, driver, worker, validatePositionIncrease));
     }
 };
 using AudioStreamIoIn = AudioStreamIo<IStreamIn>;
@@ -6193,7 +6286,7 @@ std::shared_ptr<StateSequence> makeDrainEarlyOffloadCommands() {
     // The first onDrainReady event.
     StateDag::Node draining = d->makeNode(State::DRAINING, kDrainReadyEvent, continueDraining);
     StateDag::Node drain = d->makeNode(State::ACTIVE, kDrainOutEarlyCommand, draining);
-    StateDag::Node active = makeAsyncBurstCommands(d.get(), 10, drain);
+    StateDag::Node active = makeAsyncBurstCommands(d.get(), kDefaultBurstCount, drain);
     StateDag::Node idle = d->makeNode(State::IDLE, kBurstCommand, active);
     idle.children().push_back(d->makeNode(State::TRANSFERRING, kTransferReadyEvent, active));
     d->makeNode(State::STANDBY, kStartCommand, idle);
@@ -6225,7 +6318,7 @@ std::shared_ptr<StateSequence> makeDrainEarlyAddSecondClipOffloadCommands() {
     // The first onDrainReady event.
     StateDag::Node draining = d->makeNode(State::DRAINING, kDrainReadyEvent, secondClip);
     StateDag::Node drain = d->makeNode(State::ACTIVE, kDrainOutEarlyCommand, draining);
-    StateDag::Node active = makeAsyncBurstCommands(d.get(), 10, drain);
+    StateDag::Node active = makeAsyncBurstCommands(d.get(), kDefaultBurstCount, drain);
     StateDag::Node idle = d->makeNode(State::IDLE, kBurstCommand, active);
     idle.children().push_back(d->makeNode(State::TRANSFERRING, kTransferReadyEvent, active));
     d->makeNode(State::STANDBY, kStartCommand, idle);
@@ -6246,7 +6339,7 @@ std::shared_ptr<StateSequence> makeDrainEarlyCancelOffloadCommands() {
     StateDag::Node draining =
             d->makeNode(State::DRAINING, kBurstCommand, lastIdle, lastTransferring);
     StateDag::Node drain = d->makeNode(State::ACTIVE, kDrainOutEarlyCommand, draining);
-    StateDag::Node active = makeAsyncBurstCommands(d.get(), 10, drain);
+    StateDag::Node active = makeAsyncBurstCommands(d.get(), kDefaultBurstCount, drain);
     StateDag::Node idle = d->makeNode(State::IDLE, kBurstCommand, active);
     idle.children().push_back(d->makeNode(State::TRANSFERRING, kTransferReadyEvent, active));
     d->makeNode(State::STANDBY, kStartCommand, idle);
@@ -6273,7 +6366,7 @@ std::shared_ptr<StateSequence> makeDrainEarlyPauseBeforeNotifOffloadCommands() {
                                          // The first onDrainReady event.
                                          std::make_pair(State::DRAINING, kDrainReadyEvent)},
                                         continueDraining);
-    StateDag::Node active = makeAsyncBurstCommands(d.get(), 10, drain);
+    StateDag::Node active = makeAsyncBurstCommands(d.get(), kDefaultBurstCount, drain);
     StateDag::Node idle = d->makeNode(State::IDLE, kBurstCommand, active);
     idle.children().push_back(d->makeNode(State::TRANSFERRING, kTransferReadyEvent, active));
     d->makeNode(State::STANDBY, kStartCommand, idle);
@@ -6300,7 +6393,7 @@ std::shared_ptr<StateSequence> makeDrainEarlyPauseBeforeNotifCancelOffloadComman
     StateDag::Node drain = d->makeNodes({std::make_pair(State::ACTIVE, kDrainOutEarlyCommand),
                                          std::make_pair(State::DRAINING, kPauseCommand)},
                                         resume);
-    StateDag::Node active = makeAsyncBurstCommands(d.get(), 10, drain);
+    StateDag::Node active = makeAsyncBurstCommands(d.get(), kDefaultBurstCount, drain);
     StateDag::Node idle = d->makeNode(State::IDLE, kBurstCommand, active);
     idle.children().push_back(d->makeNode(State::TRANSFERRING, kTransferReadyEvent, active));
     d->makeNode(State::STANDBY, kStartCommand, idle);
@@ -6321,7 +6414,7 @@ std::shared_ptr<StateSequence> makeDrainEarlyPauseBeforeNotifFlushOffloadCommand
              // Cancel draining by sending the flush command before the first onDrainReady event.
              std::make_pair(State::DRAIN_PAUSED, kFlushCommand)},
             State::IDLE);
-    StateDag::Node active = makeAsyncBurstCommands(d.get(), 10, drain);
+    StateDag::Node active = makeAsyncBurstCommands(d.get(), kDefaultBurstCount, drain);
     StateDag::Node idle = d->makeNode(State::IDLE, kBurstCommand, active);
     idle.children().push_back(d->makeNode(State::TRANSFERRING, kTransferReadyEvent, active));
     d->makeNode(State::STANDBY, kStartCommand, idle);
@@ -6343,7 +6436,7 @@ std::shared_ptr<StateSequence> makeDrainEarlyPauseAfterNotifFlushOffloadCommands
              // Cancel draining by sending the flush command after the first onDrainReady event.
              std::make_pair(State::DRAIN_PAUSED, kFlushCommand)},
             State::IDLE);
-    StateDag::Node active = makeAsyncBurstCommands(d.get(), 10, drain);
+    StateDag::Node active = makeAsyncBurstCommands(d.get(), kDefaultBurstCount, drain);
     StateDag::Node idle = d->makeNode(State::IDLE, kBurstCommand, active);
     idle.children().push_back(d->makeNode(State::TRANSFERRING, kTransferReadyEvent, active));
     d->makeNode(State::STANDBY, kStartCommand, idle);
@@ -6377,7 +6470,7 @@ std::shared_ptr<StateSequence> makeDrainEarlyPauseAfterReadyOffloadCommands() {
              // Burst commands sent in the 'en_sent' sub-state must not affect the state.
              std::make_pair(State::DRAIN_PAUSED, kStartCommand)},
             continueDraining);
-    StateDag::Node active = makeAsyncBurstCommands(d.get(), 10, drain);
+    StateDag::Node active = makeAsyncBurstCommands(d.get(), kDefaultBurstCount, drain);
     StateDag::Node idle = d->makeNode(State::IDLE, kBurstCommand, active);
     idle.children().push_back(d->makeNode(State::TRANSFERRING, kTransferReadyEvent, active));
     d->makeNode(State::STANDBY, kStartCommand, idle);
@@ -6613,6 +6706,48 @@ static const NamedCommandSequence kDrainPauseFlushOutAsyncSeq =
                         kStreamTransientStateTransitionDelayMs, StreamTypeFilter::ASYNC,
                         makeDrainPauseFlushOutCommands(false), false /*validatePositionIncrease*/);
 
+// `currentState` -> (flushFromFrame)`currentState`
+std::shared_ptr<StateSequence> makeFlushFromFrameOutCommands(
+        const StreamDescriptor::Command& flushFromFrameCommand) {
+    using State = StreamDescriptor::State;
+    auto d = std::make_unique<StateDag>();
+    StateDag::Node lastState = d->makeFinalNode(State::TRANSFERRING);
+    StateDag::Node flushFromFrameAfterResume =
+            d->makeNodes({std::make_pair(State::ACTIVE, kDrainOutAllCommand),
+                          std::make_pair(State::DRAINING, flushFromFrameCommand),
+                          std::make_pair(State::DRAINING, kPauseCommand),
+                          std::make_pair(State::DRAIN_PAUSED, flushFromFrameCommand),
+                          std::make_pair(State::DRAIN_PAUSED, kBurstCommand),
+                          std::make_pair(State::TRANSFER_PAUSED, flushFromFrameCommand),
+                          std::make_pair(State::TRANSFER_PAUSED, kStartCommand),
+                          std::make_pair(State::TRANSFERRING, flushFromFrameCommand)},
+                         lastState);
+    StateDag::Node activeAfterResume =
+            makeAsyncBurstCommands(d.get(), kDefaultBurstCount, flushFromFrameAfterResume);
+    StateDag::Node flushFromFrame =
+            d->makeNodes({std::make_pair(State::ACTIVE, flushFromFrameCommand),
+                          std::make_pair(State::ACTIVE, kPauseCommand),
+                          std::make_pair(State::PAUSED, flushFromFrameCommand),
+                          std::make_pair(State::PAUSED, kStartCommand)},
+                         activeAfterResume);
+    StateDag::Node active = makeAsyncBurstCommands(d.get(), kDefaultBurstCount, flushFromFrame);
+    StateDag::Node idle = d->makeNode(State::IDLE, kBurstCommand, active);
+    idle.children().push_back(d->makeNode(State::TRANSFERRING, kTransferReadyEvent, active));
+    d->makeNode(State::STANDBY, kStartCommand, idle);
+    return std::make_shared<StateSequenceFollower>(std::move(d));
+}
+
+static const NamedCommandSequence kFlushFromFrameBestEffortSeq =
+        std::make_tuple(std::string("ActiveFlushFromFrameBestEffort"), kAidlVersion4, "", 0,
+                        StreamTypeFilter::PCM_OFFLOAD,
+                        makeFlushFromFrameOutCommands(kFlushFromFrameBestEffortCommand),
+                        false /*validatePositionIncrease*/);
+
+static const NamedCommandSequence kFlushFromFrameExactSeq = std::make_tuple(
+        std::string("ActiveFlushFromFrameExact"), kAidlVersion4, "", 0,
+        StreamTypeFilter::PCM_OFFLOAD, makeFlushFromFrameOutCommands(kFlushFromFrameExactCommand),
+        false /*validatePositionIncrease*/);
+
 // Note, this isn't the "official" enum printer, it is only used to make the test name suffix.
 std::string PrintStreamFilterToString(StreamTypeFilter filter) {
     switch (filter) {
@@ -6624,6 +6759,8 @@ std::string PrintStreamFilterToString(StreamTypeFilter filter) {
             return "Async";
         case StreamTypeFilter::OFFLOAD:
             return "Offload";
+        case StreamTypeFilter::PCM_OFFLOAD:
+            return "PcmOffload";
     }
     return std::string("Unknown").append(std::to_string(static_cast<int32_t>(filter)));
 }
@@ -6665,7 +6802,8 @@ INSTANTIATE_TEST_SUITE_P(
                                 kDrainEarlyPauseBeforeNotifCancelOffloadSeq,
                                 kDrainEarlyPauseBeforeNotifFlushOffloadSeq,
                                 kDrainEarlyPauseAfterNotifFlushOffloadSeq,
-                                kDrainEarlyPauseAfterReadyOffloadSeq),
+                                kDrainEarlyPauseAfterReadyOffloadSeq, kFlushFromFrameBestEffortSeq,
+                                kFlushFromFrameExactSeq),
                 testing::Values(false, true)),
         GetStreamIoTestName);
 GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(AudioStreamIoOut);
@@ -6759,7 +6897,8 @@ class WithRemoteSubmix {
         return result;
     }
 
-    void StartWorkerToSendBurstCommands(size_t burstCount = 10, bool standbyInputWhenDone = false) {
+    void StartWorkerToSendBurstCommands(size_t burstCount = kDefaultBurstCount,
+                                        bool standbyInputWhenDone = false) {
         ASSERT_NO_FATAL_FAILURE(
                 mStream.StartWorkerToSendBurstCommands(burstCount, standbyInputWhenDone));
     }
@@ -6781,7 +6920,8 @@ class WithRemoteSubmix {
                                                                      callPrepareToCloseBeforeJoin));
     }
 
-    void SendBurstCommands(bool callPrepareToCloseBeforeJoin, size_t burstCount = 10,
+    void SendBurstCommands(bool callPrepareToCloseBeforeJoin,
+                           size_t burstCount = kDefaultBurstCount,
                            bool standbyInputWhenDone = false) {
         ASSERT_NO_FATAL_FAILURE(StartWorkerToSendBurstCommands(burstCount, standbyInputWhenDone));
         // When 'burstCount == 0', there is no "previous" frame count, thus the check for

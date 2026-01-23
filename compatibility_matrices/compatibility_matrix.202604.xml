@@ -120,6 +120,7 @@
         <interface>
             <name>IBluetoothHci</name>
             <instance>default</instance>
+            <regex-instance>hci[1-9][0-9]*</regex-instance>
         </interface>
     </hal>
     <hal format="aidl">
@@ -250,7 +251,7 @@
     </hal>
     <hal format="aidl">
         <name>android.hardware.graphics.allocator</name>
-        <version>1-2</version>
+        <version>1-3</version>
         <interface>
             <name>IAllocator</name>
             <instance>default</instance>
@@ -277,6 +278,14 @@
         <version>1-5</version>
         <interface>
             <name>IIdentityCredentialStore</name>
+            <instance>default</instance>
+        </interface>
+    </hal>
+    <hal format="aidl">
+        <name>android.hardware.motioncontext</name>
+        <version>1</version>
+        <interface>
+            <name>IMotionContext</name>
             <instance>default</instance>
         </interface>
     </hal>
@@ -397,7 +406,7 @@
     </hal>
     <hal format="aidl">
         <name>android.hardware.power</name>
-        <version>5-6</version>
+        <version>5-7</version>
         <interface>
             <name>IPower</name>
             <instance>default</instance>
@@ -537,6 +546,14 @@
         <version>1</version>
         <interface>
             <name>IHwCryptoKey</name>
+            <instance>default</instance>
+        </interface>
+    </hal>
+    <hal format="aidl" exclusive-to="virtual-machine">
+        <name>android.hardware.security.see.devicestate</name>
+        <version>1</version>
+        <interface>
+            <name>IDeviceState</name>
             <instance>default</instance>
         </interface>
     </hal>

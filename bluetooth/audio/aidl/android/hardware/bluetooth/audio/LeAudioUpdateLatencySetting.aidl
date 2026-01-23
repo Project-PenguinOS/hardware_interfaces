@@ -41,9 +41,16 @@ parcelable LeAudioUpdateLatencySetting {
          */
         const int WITH_TRANSPORT_LATENCY_CHANGE = 0x0001;
         /**
-         * Set for the update with codec configuration change
+         * Indicates that codec configuration parameters have changed.
+         * Note: This flag does not include transport latency changes. Use this flag to
+         * distinguish between the following scenarios:
+         *
+         * Config changed AND Latency changed:
+         *       WITH_CONFIG_PARAMETERS_CHANGE | WITH_TRANSPORT_LATENCY_CHANGE
+         * Config unchanged BUT Latency changed:  WITH_TRANSPORT_LATENCY_CHANGE
+         * Config changed WITHOUT Latency changed: WITH_CONFIG_PARAMETERS_CHANGE
          */
-        const int WITHOUT_TRANSPORT_LATENCY_CHANGE = 0x0002;
+        const int WITH_CONFIG_PARAMETERS_CHANGE = 0x0002;
         /**
          * Set for the update with codec type change
          */
@@ -52,6 +59,10 @@ parcelable LeAudioUpdateLatencySetting {
          * Set for the update with CIS direction change
          */
         const int WITH_CIS_DIRECTIONS_CHANGE = 0x0008;
+        /**
+         * Set for the update with the phy
+         */
+        const int WITH_PHY_CHANGE = 0x0010;
 
         int bitmask;
     }
