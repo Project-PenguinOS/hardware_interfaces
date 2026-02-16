@@ -73,7 +73,6 @@ bool ShouldCheckMissingHidlHalsInFcm(const std::string& packageAndVersion) {
             "android.hardware.audio@4.0",
             "android.hardware.bluetooth.a2dp@1.0",
             "android.hardware.cas@1.0",
-            "android.hardware.configstore@1.0",
             "android.hardware.gnss@1.0",
             "android.hardware.gnss@1.1",
             "android.hardware.graphics.mapper@2.0",
@@ -90,7 +89,6 @@ bool ShouldCheckMissingHidlHalsInFcm(const std::string& packageAndVersion) {
             "android.hardware.audio.effect@5.0",
             "android.hardware.audio@5.0",
             "android.hardware.boot@1.0",
-            "android.hardware.configstore@1.1",
             "android.hardware.drm@1.0",
             "android.hardware.drm@1.1",
             "android.hardware.drm@1.2",
@@ -109,7 +107,6 @@ bool ShouldCheckMissingHidlHalsInFcm(const std::string& packageAndVersion) {
             "android.hardware.contexthub@1.0",
             "android.hardware.contexthub@1.1",
             "android.hardware.health.storage@1.0",
-            "android.hardware.memtrack@1.0",
             "android.hardware.power.stats@1.0",
             "android.hardware.radio@1.4",
             "android.hardware.radio@1.5",
@@ -122,6 +119,25 @@ bool ShouldCheckMissingHidlHalsInFcm(const std::string& packageAndVersion) {
             "android.hardware.wifi@1.0",
             "android.hardware.wifi@1.1",
             "android.hardware.wifi@1.2",
+
+            // b/400531264 for HIDL HALs deprecated in S
+            "android.hardware.automotive.sv@1.0",
+            "android.hardware.bluetooth.audio@2.0",
+            "android.hardware.bluetooth.audio@2.1",
+            "android.hardware.contexthub@1.2",
+            "android.hardware.dumpstate@1.1",
+            "android.hardware.health@2.1",
+            "android.hardware.input.classifier@1.0",
+            "android.hardware.radio.config@1.1",
+            "android.hardware.radio.config@1.3",
+            "android.hardware.radio@1.6",
+            "android.hardware.wifi.hostapd@1.0",
+            "android.hardware.wifi.hostapd@1.1",
+            "android.hardware.wifi.hostapd@1.2",
+            "android.hardware.wifi.hostapd@1.3",
+            "android.hardware.wifi.supplicant@1.2",
+            "android.hardware.wifi.supplicant@1.3",
+            "android.hardware.wifi.supplicant@1.4",
     };
 
     auto package_has_prefix = [&](const std::string& prefix) {
@@ -196,6 +212,12 @@ bool ShouldCheckMissingAidlHalsInFcm(const std::string& packageAndVersion) {
             "android.hardware.audio.sounddose@4",
             "android.hardware.audio.sounddose@3",
             "android.hardware.bluetooth.audio@1",
+
+            // b/400531264 for AIDL HALs deprecated in S
+            "android.hardware.biometrics.face@1",
+            "android.hardware.biometrics.fingerprint@1",
+            "android.hardware.gnss@1",
+            "android.hardware.power@1",
     };
 
     auto package_has_prefix = [&](const std::string& prefix) {
