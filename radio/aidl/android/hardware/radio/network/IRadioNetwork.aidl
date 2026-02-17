@@ -831,7 +831,9 @@ oneway interface IRadioNetwork {
      * {@link disablePrioritizedNetworkScan}. After successful attachment, if the network
      * is lost, modem must go back to prioritized scanning.
      *
-     * <p> Note that the cell reselection priority must not be changed based upon scanRequest.
+     * <p>The modem should do the prioritized scanning only when it is in out of service state.
+     * <p> Note: A "limited service" state is considered out-of-service for this operation.
+     * <p> Note: The cell reselection priority must not be changed based upon scanRequest.
      *
      * @param serial Serial number of request.
      * @param scanRequest The prioritized scan request info.
@@ -844,9 +846,6 @@ oneway interface IRadioNetwork {
      * Disable a prioritized scanning mode for specific networks.
      * This is an optional API. It must be implemented if
      * {@link #enablePrioritizedNetworkScan} is implemented.
-     *
-     * <p>If the device is already attached to a prioritized network provided by
-     * {@link enablePrioritizedNetworkScan}, it should detach from it.
      *
      * @param serial Serial number of request.
      *

@@ -2090,6 +2090,61 @@ TEST_P(NewKeyGenerationTest, EcdsaAttestationIdAllTags) {
 }
 
 /*
+ * NewKeyGenerationTest.DeviceIdAttestationDisabled
+ *
+ * Verifies that ID attestation attempts return an error when the device ID attestation feature
+ * is disabled.
+ */
+TEST_P(NewKeyGenerationTest, DeviceIdAttestationDisabled) {
+    if (check_feature(FEATURE_DEVICE_ID_ATTESTATION)) {
+        GTEST_SKIP() << "Device ID attestation is enabled";
+    }
+
+    const AuthorizationSetBuilder base_builder = AuthorizationSetBuilder()
+                                                         .Authorization(TAG_NO_AUTH_REQUIRED)
+                                                         .EcdsaSigningKey(EcCurve::P_256)
+                                                         .Digest(Digest::NONE)
+                                                         .AttestationChallenge("hello")
+                                                         .AttestationApplicationId("foo")
+                                                         .SetDefaultValidity();
+
+    // Various ATTESTATION_ID_* tags with real values from the system properties.
+    auto id_tags = AuthorizationSetBuilder();
+    add_attestation_id(&id_tags, TAG_ATTESTATION_ID_BRAND, "brand");
+    add_attestation_id(&id_tags, TAG_ATTESTATION_ID_DEVICE, "device");
+    add_attestation_id(&id_tags, TAG_ATTESTATION_ID_PRODUCT, "name");
+    add_attestation_id(&id_tags, TAG_ATTESTATION_ID_MANUFACTURER, "manufacturer");
+    add_attestation_id(&id_tags, TAG_ATTESTATION_ID_MODEL, "model");
+    add_tag_from_prop(&id_tags, TAG_ATTESTATION_ID_SERIAL, "ro.serialno");
+
+    string imei = get_imei(0);
+    if (!imei.empty()) {
+        id_tags.Authorization(TAG_ATTESTATION_ID_IMEI, imei.data(), imei.size());
+    }
+    string second_imei = get_imei(1);
+    if (!second_imei.empty() && isSecondImeiIdAttestationRequired()) {
+        id_tags.Authorization(TAG_ATTESTATION_ID_SECOND_IMEI, second_imei.data(),
+                              second_imei.size());
+    }
+
+    for (const auto& tag_param : id_tags) {
+        SCOPED_TRACE(testing::Message() << "tag-" << tag_param.tag);
+        vector<uint8_t> key_blob;
+        vector<KeyCharacteristics> key_characteristics;
+        AuthorizationSetBuilder builder = base_builder;
+        builder.push_back(tag_param);
+        auto result = GenerateKey(builder, &key_blob, &key_characteristics);
+
+        // If the feature is disabled, the HAL MUST return CANNOT_ATTEST_IDS
+        // or ATTESTATION_IDS_NOT_PROVISIONED, even if the ID is correct.
+        EXPECT_TRUE(result == ErrorCode::CANNOT_ATTEST_IDS ||
+                    result == ErrorCode::ATTESTATION_IDS_NOT_PROVISIONED)
+                << "Expected failure for tag " << tag_param.tag
+                << " when feature is disabled, but got " << result;
+    }
+}
+
+/*
  * NewKeyGenerationTest.EcdsaAttestationUniqueId
  *
  * Verifies that creation of an attested ECDSA key with a UNIQUE_ID included.
@@ -8220,7 +8275,6 @@ TEST_P(KeyDeletionTest, DeleteKey) {
 
     ASSERT_EQ(ErrorCode::OK, DeleteKey(true /* keep key blob */));
 
-    string message = "12345678901234567890123456789012";
     AuthorizationSet begin_out_params;
     EXPECT_EQ(ErrorCode::INVALID_KEY_BLOB,
               Begin(KeyPurpose::SIGN, key_blob_,
@@ -8228,6 +8282,60 @@ TEST_P(KeyDeletionTest, DeleteKey) {
                     &begin_out_params));
     AbortIfNeeded();
     key_blob_ = AidlBuf();
+}
+
+/**
+ * KeyDeletionTest.DeleteKeyInUse
+ *
+ * This test checks that deleting a key that is mid-operation doesn't cause serious failures.
+ */
+TEST_P(KeyDeletionTest, DeleteKeyInUse) {
+    for (bool rollback_resistance : {false, true}) {
+        SCOPED_TRACE(testing::Message() << "rollback_resistance=" << rollback_resistance);
+        auto builder = AuthorizationSetBuilder()
+                               .RsaSigningKey(2048, 65537)
+                               .Digest(Digest::NONE)
+                               .Padding(PaddingMode::NONE)
+                               .Authorization(TAG_NO_AUTH_REQUIRED)
+                               .SetDefaultValidity();
+        if (rollback_resistance) {
+            builder.Authorization(TAG_ROLLBACK_RESISTANCE);
+        }
+        auto error = GenerateKey(builder);
+        if (rollback_resistance && error == ErrorCode::ROLLBACK_RESISTANCE_UNAVAILABLE) {
+            continue;
+        }
+
+        ASSERT_EQ(ErrorCode::OK, error);
+        if (rollback_resistance) {
+            AuthorizationSet hardwareEnforced(SecLevelAuthorizations());
+            ASSERT_TRUE(hardwareEnforced.Contains(TAG_ROLLBACK_RESISTANCE));
+        }
+
+        // Start an operation.
+        AuthorizationSet begin_out_params;
+        ASSERT_EQ(ErrorCode::OK,
+                  Begin(KeyPurpose::SIGN, key_blob_,
+                        AuthorizationSetBuilder().Digest(Digest::NONE).Padding(PaddingMode::NONE),
+                        &begin_out_params));
+
+        // Delete the key while the operation is still active.
+        ASSERT_EQ(ErrorCode::OK, DeleteKey(/* keep key blob= */ true));
+
+        const string message = "12345678901234567890123456789012";
+        string signature;
+        auto result = Finish(message, &signature);
+
+        // Continuing use of a deleted key may or may not succeed (so this is mostly a robustness
+        // test).
+        EXPECT_TRUE(result == ErrorCode::OK || result == ErrorCode::INVALID_KEY_BLOB ||
+                    result == ErrorCode::INVALID_OPERATION_HANDLE ||
+                    result == ErrorCode::INVALID_OPERATION ||
+                    result == ErrorCode::INVALID_ARGUMENT ||
+                    result == ErrorCode::OPERATION_CANCELLED)
+                << "failed with " << result;
+        key_blob_ = AidlBuf();
+    }
 }
 
 /**
@@ -8955,6 +9063,21 @@ TEST_P(VsrRequirementTest, Vsr16Test) {
         GTEST_SKIP() << "Applies only to TEE KeyMint, not StrongBox KeyMint";
     }
     EXPECT_GE(AidlVersion(), 4) << "VSR 16+ requires KeyMint version 4 in TEE";
+}
+
+// @VsrTest = GMS-VSR-3.10
+TEST_P(VsrRequirementTest, Vsr17Test) {
+    int vendor_api_level = get_vendor_api_level();
+    int last_unsupported_api_level = AVendorSupport_getVendorApiLevelOf(36);
+    if (vendor_api_level <= last_unsupported_api_level) {
+        GTEST_SKIP() << "Applies only to vendor API level > " << last_unsupported_api_level
+                     << ", but this device is: " << vendor_api_level;
+    }
+    if (SecLevel() == SecurityLevel::STRONGBOX) {
+        EXPECT_GE(AidlVersion(), 4) << "VSR 17+ requires KeyMint version 4 in StrongBox";
+    } else {
+        EXPECT_GE(AidlVersion(), 5) << "VSR 17+ requires KeyMint version 5 in TEE";
+    }
 }
 
 INSTANTIATE_KEYMINT_AIDL_TEST(VsrRequirementTest);

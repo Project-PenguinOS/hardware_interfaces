@@ -43,6 +43,7 @@
 #include <aidl/android/hardware/audio/core/IModule.h>
 #include <aidl/android/hardware/audio/core/ITelephony.h>
 #include <aidl/android/hardware/audio/core/sounddose/ISoundDose.h>
+#include <aidl/android/media/audio/common/AudioGainMode.h>
 #include <aidl/android/media/audio/common/AudioIoFlags.h>
 #include <aidl/android/media/audio/common/AudioMMapPolicyInfo.h>
 #include <aidl/android/media/audio/common/AudioMMapPolicyType.h>
@@ -101,6 +102,7 @@ using aidl::android::media::audio::common::AudioEncapsulationMode;
 using aidl::android::media::audio::common::AudioFormatDescription;
 using aidl::android::media::audio::common::AudioFormatType;
 using aidl::android::media::audio::common::AudioGainConfig;
+using aidl::android::media::audio::common::AudioGainMode;
 using aidl::android::media::audio::common::AudioInputFlags;
 using aidl::android::media::audio::common::AudioIoFlags;
 using aidl::android::media::audio::common::AudioLatencyMode;
@@ -399,7 +401,15 @@ class WithModuleParameter {
 class WithAudioPortConfig {
   public:
     WithAudioPortConfig() = default;
-    explicit WithAudioPortConfig(const AudioPortConfig& config) : mInitialConfig(config) {}
+    explicit WithAudioPortConfig(const AudioPortConfig& config) : mInitialConfig(config) {
+        static int32_t sHandleCounter = 100;  // Arbitrary base offset
+        if (mInitialConfig.ext.getTag() == AudioPortExt::Tag::mix) {
+            auto& mixExt = mInitialConfig.ext.template get<AudioPortExt::Tag::mix>();
+            if (mixExt.handle == 0) {
+                mixExt.handle = sHandleCounter++;
+            }
+        }
+    }
     WithAudioPortConfig(const WithAudioPortConfig&) = delete;
     WithAudioPortConfig& operator=(const WithAudioPortConfig&) = delete;
     ~WithAudioPortConfig() {
@@ -2206,6 +2216,52 @@ TEST_P(AudioCoreModule, CheckMixPorts) {
                     << "Primary mix port " << port.id << " can not have maxOpenStreamCount "
                     << mixPort.maxOpenStreamCount;
         }
+        if (aidlVersion >= kAidlVersion4) {
+            std::set<AudioFormatDescription> formats;
+            for (const auto& profile : port.profiles) {
+                EXPECT_TRUE(formats.insert(profile.format).second /*inserted*/)
+                        << "Mix port " << port.id << " has duplicate profiles for format "
+                        << profile.format.toString();
+            }
+        }
+    }
+}
+
+// Validate that in each mix port, all profiles that can be routed to the same
+// device use distinct flags (except for mix ports that do not have any flags).
+TEST_P(AudioCoreModule, CheckMixPortsFlags) {
+    if (aidlVersion < kAidlVersion4) {
+        GTEST_SKIP() << "Current HAL version less than " << kAidlVersion4 << ". Skipping the test ";
+    }
+    ASSERT_NO_FATAL_FAILURE(SetUpModuleConfig());
+    std::vector<AudioPort> ports;
+    ASSERT_IS_OK(module->getAudioPorts(&ports));
+    std::map<AudioIoFlags, std::set<int32_t>> flagsToDevices;
+    for (const auto& port : ports) {
+        if (port.ext.getTag() != AudioPortExt::Tag::mix) continue;
+        int32_t flagsValue = 0;
+        if (port.flags.getTag() == AudioIoFlags::Tag::input) {
+            flagsValue = port.flags.get<AudioIoFlags::Tag::input>();
+        } else if (port.flags.getTag() == AudioIoFlags::Tag::output) {
+            flagsValue = port.flags.get<AudioIoFlags::Tag::output>();
+        }
+        if (flagsValue == 0) continue;
+        auto routableDevices =
+                moduleConfig->getRoutableDevicePortsForMixPort(port, false /*connectedOnly*/);
+        std::set<int32_t> currentDeviceIds;
+        for (const auto& devicePort : routableDevices) {
+            currentDeviceIds.insert(devicePort.id);
+        }
+        auto& existingDevices = flagsToDevices[port.flags];
+        std::vector<int32_t> intersection;
+        std::set_intersection(currentDeviceIds.begin(), currentDeviceIds.end(),
+                              existingDevices.begin(), existingDevices.end(),
+                              std::back_inserter(intersection));
+        EXPECT_TRUE(intersection.empty())
+                << "Mix port " << port.id << " has flags " << port.flags.toString()
+                << " that duplicate flags of other mix ports which can be routed to device"
+                << " ports: " << ::android::internal::ToString(intersection);
+        existingDevices.insert(currentDeviceIds.begin(), currentDeviceIds.end());
     }
 }
 
@@ -5466,7 +5522,6 @@ TEST_P(AudioStreamOut, PlaybackRate) {
 }
 
 TEST_P(AudioStreamOut, SelectPresentation) {
-    static const auto kStatuses = {EX_ILLEGAL_ARGUMENT, EX_UNSUPPORTED_OPERATION};
     const auto offloadMixPorts =
             moduleConfig->getOffloadMixPorts(true /*connectedOnly*/, false /*singlePort*/);
     if (offloadMixPorts.empty()) {
@@ -5479,9 +5534,18 @@ TEST_P(AudioStreamOut, SelectPresentation) {
         ASSERT_TRUE(portConfig.has_value()) << "No profiles specified for output mix port";
         WithStream<IStreamOut> stream(portConfig.value());
         ASSERT_NO_FATAL_FAILURE(stream.SetUp(module.get(), kDefaultLargeBufferSizeFrames));
-        ndk::ScopedAStatus status;
-        EXPECT_STATUS(kStatuses, status = stream.get()->selectPresentation(0, 0));
-        if (status.getExceptionCode() != EX_UNSUPPORTED_OPERATION) atLeastOneSupports = true;
+        ndk::ScopedAStatus status = stream.get()->selectPresentation(0, 0);
+        if (status.getExceptionCode() == EX_UNSUPPORTED_OPERATION) continue;
+        atLeastOneSupports = true;
+        if (status.getExceptionCode() == EX_ILLEGAL_ARGUMENT) continue;
+        // Negative presentation IDs are not allowed, but '-1' is OK, so use '-2'.
+        ASSERT_STATUS(EX_ILLEGAL_ARGUMENT, stream.get()->selectPresentation(-2, 0));
+        // Program ID can not exceed unsigned 16-bit value range.
+        ASSERT_STATUS(EX_ILLEGAL_ARGUMENT,
+                      stream.get()->selectPresentation(
+                              0, static_cast<int32_t>(std::numeric_limits<uint16_t>::max()) + 1));
+        // Negative program IDs are not allowed, but '-1' is OK, so use '-2'.
+        ASSERT_STATUS(EX_ILLEGAL_ARGUMENT, stream.get()->selectPresentation(0, -2));
     }
     if (!atLeastOneSupports) {
         GTEST_SKIP() << "Presentation selection is not supported";
@@ -5512,6 +5576,154 @@ TEST_P(AudioStreamOut, UpdateOffloadMetadata) {
                                              .delayFrames = -1,
                                              .paddingFrames = -1};
         EXPECT_STATUS(EX_ILLEGAL_ARGUMENT, stream.get()->updateOffloadMetadata(invalidMetadata));
+    }
+}
+
+// @VsrTest = VSR-5.5-003
+TEST_P(AudioStreamOut, HwVolumeAndPortGainIndependence) {
+    if (aidlVersion < kAidlVersion4) {
+        GTEST_SKIP() << "Current HAL version less than 4. Skipping the test.";
+    }
+    constexpr bool connectedOnly = true;
+    const auto ports = moduleConfig->getOutputMixPorts(connectedOnly);
+    if (ports.empty()) {
+        GTEST_SKIP() << "No output mix ports for attached devices";
+    }
+
+    bool atLeastOnePortTested = false;
+    for (const auto& port : ports) {
+        SCOPED_TRACE(port.toString());
+        StreamFixture<IStreamOut> stream;
+        ASSERT_NO_FATAL_FAILURE(stream.SetUpStreamForMixPort(module.get(), moduleConfig.get(), port,
+                                                             connectedOnly));
+        if (!stream.skipTestReason().empty()) {
+            continue;
+        }
+
+        const auto portConfig = stream.getPortConfig();
+        SCOPED_TRACE(portConfig.toString());
+
+        // Check if setHwVolume is supported
+        std::vector<float> initialHwVolume;
+        ScopedAStatus status = stream.getStream()->getHwVolume(&initialHwVolume);
+        if (status.getExceptionCode() == EX_UNSUPPORTED_OPERATION) {
+            continue;
+        }
+        ASSERT_IS_OK(status) << "Unexpected status from getHwVolume: " << status;
+
+        // Check if port gain is supported
+        const auto devicePortConfig = stream.getDevicePortConfig();
+        auto devicePort = moduleConfig->getPort(devicePortConfig.portId);
+        ASSERT_TRUE(devicePort.has_value());
+        if (devicePort->gains.empty()) {
+            continue;  // Skip if device port has no gain control
+        }
+
+        atLeastOnePortTested = true;
+        const int channelCount = getChannelCount(portConfig.channelMask.value());
+        ASSERT_GT(channelCount, 0);
+
+        std::vector<AudioPortConfig> allPortConfigs;
+        ASSERT_IS_OK(module->getAudioPortConfigs(&allPortConfigs));
+
+        // Find the specific config for our Device Port
+        auto activeDevicePortConfig = findById(allPortConfigs, devicePortConfig.id);
+        ASSERT_NE(activeDevicePortConfig, allPortConfigs.end())
+                << "Device port config " << devicePortConfig.id << " not found in HAL";
+        AudioPortConfig initialDevicePortConfig = *activeDevicePortConfig;
+
+        // Change HW volume and verify no change in port gain
+        std::vector<float> testHwVolume = initialHwVolume;
+        std::transform(testHwVolume.begin(), testHwVolume.end(), testHwVolume.begin(), [](float v) {
+            // If current volume is 0, flip to max. Otherwise, halve it.
+            return (v == 0.0f) ? IStreamOut::HW_VOLUME_MAX : v * 0.5f;
+        });
+        ASSERT_IS_OK(stream.getStream()->setHwVolume(testHwVolume));
+
+        allPortConfigs.clear();
+        ASSERT_IS_OK(module->getAudioPortConfigs(&allPortConfigs));
+
+        // Find the specific config for our Device Port
+        activeDevicePortConfig = findById(allPortConfigs, devicePortConfig.id);
+        ASSERT_NE(activeDevicePortConfig, allPortConfigs.end())
+                << "Device port config " << devicePortConfig.id << " not found in HAL";
+        AudioPortConfig currentDevicePortConfig = *activeDevicePortConfig;
+
+        bool gainChanged = false;
+        if (initialDevicePortConfig.gain.has_value()) {
+            if (!currentDevicePortConfig.gain.has_value()) {
+                EXPECT_TRUE(currentDevicePortConfig.gain.has_value())
+                        << "Port gain unexpectedly became empty after setHwVolume";
+                gainChanged = true;
+            } else {
+                if (initialDevicePortConfig.gain.value() != currentDevicePortConfig.gain.value()) {
+                    EXPECT_EQ(initialDevicePortConfig.gain.value(),
+                              currentDevicePortConfig.gain.value())
+                            << "Port gain changed after setHwVolume";
+                    gainChanged = true;
+                }
+            }
+        } else {
+            if (currentDevicePortConfig.gain.has_value()) {
+                EXPECT_FALSE(currentDevicePortConfig.gain.has_value())
+                        << "Port gain unexpectedly appeared after setHwVolume";
+                gainChanged = true;
+            }
+        }
+        if (gainChanged) continue;
+
+        // Restore initial HW volume
+        ASSERT_IS_OK(stream.getStream()->setHwVolume(initialHwVolume));
+
+        // Change port gain and verify no change in HW volume
+        const int gainIndex = 0;
+        const auto& gainController = devicePort->gains[gainIndex];
+
+        const size_t count = (isBitPositionFlagSet(gainController.mode, AudioGainMode::JOINT)) ? 1
+                             : (isBitPositionFlagSet(gainController.mode, AudioGainMode::CHANNELS))
+                                     ? getChannelCount(gainController.channelMask)
+                             : (isBitPositionFlagSet(gainController.mode, AudioGainMode::RAMP)) ? 1
+                                                                                                : 0;
+        const std::vector<int32_t> gains(count, gainController.defaultValue);
+
+        // Set a gain value different from the initial one
+        if (gainController.minValue == gainController.maxValue) {
+            LOG(DEBUG) << "Skipping validation for this port due to single supported gain value: "
+                       << port.toString();
+            continue;
+        }
+        AudioGainConfig testPortGain =
+                (initialDevicePortConfig.gain.has_value() &&
+                 !initialDevicePortConfig.gain.value().values.empty())
+                        ? initialDevicePortConfig.gain.value()
+                        : AudioGainConfig{.index = gainIndex,
+                                          .mode = gainController.mode,
+                                          .channelMask = gainController.channelMask,
+                                          .values = gains,
+                                          .rampDurationMs = 0};
+
+        for (auto& value : testPortGain.values) {
+            value = (value == gainController.minValue) ? gainController.maxValue
+                                                       : gainController.minValue;
+        }
+        testPortGain.index = gainIndex;
+
+        AudioPortConfig deviceConfigToSet = initialDevicePortConfig;
+        deviceConfigToSet.gain = testPortGain;
+        bool applied = false;
+        AudioPortConfig suggestedConfig;
+        ASSERT_IS_OK(module->setAudioPortConfig(deviceConfigToSet, &suggestedConfig, &applied));
+        ASSERT_TRUE(applied) << "Failed to apply initial port config: " << deviceConfigToSet
+                             << ". Suggested: " << suggestedConfig.toString();
+
+        std::vector<float> currentHwVolume;
+        ASSERT_IS_OK(stream.getStream()->getHwVolume(&currentHwVolume));
+        EXPECT_EQ(initialHwVolume, currentHwVolume)
+                << "HW volume changed after setAudioPortConfig with gain";
+    }
+
+    if (!atLeastOnePortTested) {
+        GTEST_SKIP() << "No port found supporting both IStreamOut.setHwVolume and device port gain";
     }
 }
 
@@ -5632,12 +5844,14 @@ class AudioStreamIo : public AudioCoreModuleBase,
                                       AudioOutputFlags::COMPRESS_OFFLOAD);
             const bool isCompressOffload =
                     isOffload && portConfig.format.value().type == AudioFormatType::NON_PCM;
+            const bool isMmap = hasMmapFlag(portConfig.flags.value());
             if (auto streamType =
                         std::get<NAMED_CMD_STREAM_TYPE>(std::get<PARAM_CMD_SEQ>(GetParam()));
                 (isNonBlocking && streamType == StreamTypeFilter::SYNC) ||
                 (!isNonBlocking && streamType == StreamTypeFilter::ASYNC) ||
                 (!isOffload && (streamType == StreamTypeFilter::OFFLOAD ||
-                                streamType == StreamTypeFilter::PCM_OFFLOAD))) {
+                                streamType == StreamTypeFilter::PCM_OFFLOAD)) ||
+                (isMmap && streamType == StreamTypeFilter::PCM_OFFLOAD)) {
                 continue;
             }
             const auto configBase = AudioConfigBase{portConfig.sampleRate->value,
@@ -6709,6 +6923,10 @@ static const NamedCommandSequence kDrainPauseFlushOutAsyncSeq =
 // `currentState` -> (flushFromFrame)`currentState`
 std::shared_ptr<StateSequence> makeFlushFromFrameOutCommands(
         const StreamDescriptor::Command& flushFromFrameCommand) {
+    // The default burst behavior will write maximum data. FlushFromFrame is only available on
+    // PCM offload where the buffer size is big. In that case, only issue two burst request should
+    // be enough for testing.
+    static constexpr int kBurstCountForFlushFromFrame = 2;
     using State = StreamDescriptor::State;
     auto d = std::make_unique<StateDag>();
     StateDag::Node lastState = d->makeFinalNode(State::TRANSFERRING);
@@ -6722,15 +6940,16 @@ std::shared_ptr<StateSequence> makeFlushFromFrameOutCommands(
                           std::make_pair(State::TRANSFER_PAUSED, kStartCommand),
                           std::make_pair(State::TRANSFERRING, flushFromFrameCommand)},
                          lastState);
-    StateDag::Node activeAfterResume =
-            makeAsyncBurstCommands(d.get(), kDefaultBurstCount, flushFromFrameAfterResume);
+    StateDag::Node activeAfterResume = makeAsyncBurstCommands(d.get(), kBurstCountForFlushFromFrame,
+                                                              flushFromFrameAfterResume);
     StateDag::Node flushFromFrame =
             d->makeNodes({std::make_pair(State::ACTIVE, flushFromFrameCommand),
                           std::make_pair(State::ACTIVE, kPauseCommand),
                           std::make_pair(State::PAUSED, flushFromFrameCommand),
                           std::make_pair(State::PAUSED, kStartCommand)},
                          activeAfterResume);
-    StateDag::Node active = makeAsyncBurstCommands(d.get(), kDefaultBurstCount, flushFromFrame);
+    StateDag::Node active =
+            makeAsyncBurstCommands(d.get(), kBurstCountForFlushFromFrame, flushFromFrame);
     StateDag::Node idle = d->makeNode(State::IDLE, kBurstCommand, active);
     idle.children().push_back(d->makeNode(State::TRANSFERRING, kTransferReadyEvent, active));
     d->makeNode(State::STANDBY, kStartCommand, idle);

@@ -18,6 +18,7 @@
 
 #include "bluetooth_hal/hal_types.h"
 #include "bluetooth_hal/test/mock/mock_android_base_wrapper.h"
+#include "bluetooth_hal/transport/transport_factory.h"
 #include "gtest/gtest.h"
 
 namespace bluetooth_hal::transport {
@@ -29,9 +30,9 @@ using ::bluetooth_hal::hci::HciPacketType;
 using ::bluetooth_hal::util::MockAndroidBaseWrapper;
 
 TEST(TransportUartH4Test, GetTransportReturnSameInstance) {
-  MockAndroidBaseWrapper mock_android_base_wrapper;
-  MockAndroidBaseWrapper::SetMockWrapper(&mock_android_base_wrapper);
-  EXPECT_EQ(&TransportUartH4::GetTransport(), &TransportUartH4::GetTransport());
+    MockAndroidBaseWrapper mock_android_base_wrapper;
+    MockAndroidBaseWrapper::SetMockWrapper(&mock_android_base_wrapper);
+    EXPECT_EQ(&TransportFactory::GetTransport(), &TransportFactory::GetTransport());
 }
 
 }  // namespace

@@ -61,6 +61,7 @@ constexpr uint64_t kOpHandleSentinel = 0xFFFFFFFFFFFFFFFF;
 const string FEATURE_KEYSTORE_APP_ATTEST_KEY = "android.hardware.keystore.app_attest_key";
 const string FEATURE_STRONGBOX_KEYSTORE = "android.hardware.strongbox_keystore";
 const string FEATURE_HARDWARE_KEYSTORE = "android.hardware.hardware_keystore";
+const string FEATURE_DEVICE_ID_ATTESTATION = "android.software.device_id_attestation";
 
 const string ML_DSA_65_OID = "2.16.840.1.101.3.4.3.18";
 const string ML_DSA_87_OID = "2.16.840.1.101.3.4.3.19";
@@ -75,6 +76,16 @@ class KeyBlobDeleter {
   private:
     shared_ptr<IKeyMintDevice> keymint_;
     vector<uint8_t> key_blob_;
+};
+
+// Wrapped key information.
+struct WrappedKeyInfo {
+    // Wrapped key data as an ASN.1 DER-encoded `SecureKeyWrapper`.
+    std::vector<uint8_t> wrapped_key_data;
+    // Keyblob data for the KeyMint wrapping key.
+    std::vector<uint8_t> wrapping_key_blob;
+    // Masking key value.
+    std::vector<uint8_t> masking_key;
 };
 
 class KeyMintAidlTestBase : public ::testing::TestWithParam<string> {
@@ -137,6 +148,17 @@ class KeyMintAidlTestBase : public ::testing::TestWithParam<string> {
     ErrorCode ImportKey(const AuthorizationSet& key_desc, KeyFormat format,
                         const string& key_material);
 
+    void WrapKey(const vector<uint8_t>& key_to_wrap, KeyFormat key_format,
+                 const AuthorizationSet& key_desc, WrappedKeyInfo* wrap_info);
+
+    ErrorCode ImportWrappedKey(const WrappedKeyInfo& wrap_info, int64_t password_sid,
+                               int64_t biometric_sid) {
+        auto params =
+                AuthorizationSetBuilder().Digest(Digest::SHA_2_256).Padding(PaddingMode::RSA_OAEP);
+        return ImportWrappedKey(wrap_info.wrapped_key_data, wrap_info.wrapping_key_blob,
+                                wrap_info.masking_key, params.vector_data(), password_sid,
+                                biometric_sid);
+    }
     ErrorCode ImportWrappedKey(const vector<uint8_t>& wrapped_key,
                                const vector<uint8_t>& wrapping_key_blob,
                                const vector<uint8_t>& masking_key,
@@ -187,11 +209,22 @@ class KeyMintAidlTestBase : public ::testing::TestWithParam<string> {
     ErrorCode UpdateAad(const string& input);
     ErrorCode Update(const string& input, string* output) { return Update(input, output, {}, {}); }
     ErrorCode Update(const string& input, string* output, std::optional<HardwareAuthToken> hat,
+                     std::optional<secureclock::TimeStampToken> time_token) {
+        return Update(&op_, input, output, hat, time_token);
+    }
+    ErrorCode Update(std::shared_ptr<IKeyMintOperation>* op, const string& input, string* output,
+                     std::optional<HardwareAuthToken> hat,
                      std::optional<secureclock::TimeStampToken> time_token);
 
-    ErrorCode Finish(const string& message, const string& signature, string* output,
+    ErrorCode Finish(std::shared_ptr<IKeyMintOperation>* op, const string& message,
+                     const string& signature, string* output,
                      std::optional<HardwareAuthToken> hat = std::nullopt,
                      std::optional<secureclock::TimeStampToken> time_token = std::nullopt);
+    ErrorCode Finish(const string& message, const string& signature, string* output,
+                     std::optional<HardwareAuthToken> hat = std::nullopt,
+                     std::optional<secureclock::TimeStampToken> time_token = std::nullopt) {
+        return Finish(&op_, message, signature, output, hat, time_token);
+    }
     ErrorCode Finish(const string& message, string* output) {
         return Finish(message, {} /* signature */, output);
     }
@@ -237,8 +270,6 @@ class KeyMintAidlTestBase : public ::testing::TestWithParam<string> {
                             const string& signature, const AuthorizationSet& params);
     void LocalVerifyMessage(const string& message, const string& signature,
                             const AuthorizationSet& params);
-    void LocalVerifyMlDsaRaw(const std::string& message, const std::string& signature,
-                             MlDsaVariant variant, const vector<uint8_t>& pubkey);
 
     string LocalRsaEncryptMessage(const string& message, const AuthorizationSet& params);
     string EncryptMessage(const vector<uint8_t>& key_blob, const string& message,
@@ -454,19 +485,8 @@ bool verify_attestation_record(int aidl_version,                       //
 
 string hex2str(string a);
 string bin2hex(const vector<uint8_t>& data);
+std::vector<uint8_t> random_vector(size_t len);
 
-// Information held in the SubjectPublicKeyInfo of a certificate.
-struct SubjectPublicKeyInfo {
-    bool is_mldsa() { return (oid == ML_DSA_65_OID || oid == ML_DSA_87_OID); }
-
-    // OBJECT IDENTIFIER as a dotted string.
-    string oid;
-    // Raw bytes of the public key.
-    vector<uint8_t> pubkey;
-    // Parameters are not included.
-};
-
-void extract_spki(X509* certificate, SubjectPublicKeyInfo* info, bool require_no_params = true);
 X509_Ptr parse_cert_blob(const vector<uint8_t>& blob);
 ASN1_OCTET_STRING* get_attestation_record(X509* certificate);
 vector<uint8_t> make_name_from_str(const string& name);

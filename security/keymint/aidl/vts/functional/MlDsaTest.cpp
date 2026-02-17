@@ -301,18 +301,28 @@ class MlDsaTest : public KeyMintAidlTestBase {
         }
     }
 
-    void LocalVerifyMlDsa(const std::string& message, const std::string& signature,
-                          MlDsaVariant variant) {
-        // Parse the certificate and retrieve the public key.
-        ASSERT_GT(cert_chain_.size(), 0);
-        X509_Ptr cert(parse_cert_blob(cert_chain_[0].encodedCertificate));
-        ASSERT_NE(cert.get(), nullptr);
+    void LocalVerifyMlDsa(const std::string& message, const std::string& signature) {
+        LocalVerifyMessage(message, signature, AuthorizationSetBuilder().Digest(Digest::NONE));
+    }
 
-        SubjectPublicKeyInfo info;
-        extract_spki(cert.get(), &info);
-        EXPECT_EQ(info.oid, kOidString.find(variant)->second);
+    void CheckMlDsaKey(MlDsaVariant variant, KeyOrigin origin) {
+        EXPECT_GT(key_blob_.size(), 0U);
 
-        LocalVerifyMlDsaRaw(message, signature, variant, info.pubkey);
+        CheckCommonParams(key_characteristics_, origin);
+        CheckCharacteristics(key_blob_, key_characteristics_);
+
+        EXPECT_GT(cert_chain_.size(), 0);
+        EXPECT_TRUE(ChainSignaturesAreValid(cert_chain_));
+
+        AuthorizationSet crypto_params = SecLevelAuthorizations(key_characteristics_);
+        EXPECT_TRUE(crypto_params.Contains(TAG_ALGORITHM, Algorithm::ML_DSA));
+        EXPECT_TRUE(crypto_params.Contains(TAG_ML_DSA_VARIANT, variant))
+                << "Variant " << variant << " missing";
+
+        // Check a signature against public key locally created from the seed.
+        string message = "12345678901234567890123456789012";
+        string signature = SignMessage(message, AuthorizationSetBuilder().Digest(Digest::NONE));
+        DefaultSeedVerify(message, signature, variant);
     }
 };
 
@@ -331,14 +341,14 @@ TEST_P(MlDsaTest, KeyGeneration) {
         CheckBaseParams(key_characteristics);
         CheckCharacteristics(key_blob, key_characteristics);
 
-        ASSERT_GT(cert_chain_.size(), 0);
+        EXPECT_GT(cert_chain_.size(), 0);
         EXPECT_TRUE(ChainSignaturesAreValid(cert_chain_));
 
         AuthorizationSet crypto_params = SecLevelAuthorizations(key_characteristics);
 
         EXPECT_TRUE(crypto_params.Contains(TAG_ALGORITHM, Algorithm::ML_DSA));
         EXPECT_TRUE(crypto_params.Contains(TAG_ML_DSA_VARIANT, variant))
-                << "Variant " << variant << "missing";
+                << "Variant " << variant << " missing";
     }
 }
 
@@ -361,13 +371,13 @@ TEST_P(MlDsaTest, GenerateWithAttestation) {
         CheckBaseParams(key_characteristics);
         CheckCharacteristics(key_blob, key_characteristics);
 
-        ASSERT_GT(cert_chain_.size(), 0);
+        EXPECT_GT(cert_chain_.size(), 0);
         EXPECT_TRUE(ChainSignaturesAreValid(cert_chain_));
 
         AuthorizationSet crypto_params = SecLevelAuthorizations(key_characteristics);
         EXPECT_TRUE(crypto_params.Contains(TAG_ALGORITHM, Algorithm::ML_DSA));
         EXPECT_TRUE(crypto_params.Contains(TAG_ML_DSA_VARIANT, variant))
-                << "Variant " << variant << "missing";
+                << "Variant " << variant << " missing";
 
         AuthorizationSet hw_enforced = HwEnforcedAuthorizations(key_characteristics);
         AuthorizationSet sw_enforced = SwEnforcedAuthorizations(key_characteristics);
@@ -416,7 +426,7 @@ TEST_P(MlDsaTest, SignOneShot) {
 
         string message = "12345678901234567890123456789012";
         string signature = SignMessage(message, AuthorizationSetBuilder().Digest(Digest::NONE));
-        LocalVerifyMlDsa(message, signature, variant);
+        LocalVerifyMlDsa(message, signature);
     }
 }
 
@@ -450,7 +460,84 @@ TEST_P(MlDsaTest, SignIncremental) {
         string signature;
         EXPECT_EQ(ErrorCode::OK, Finish({}, &signature));
 
-        LocalVerifyMlDsa(message, signature, variant);
+        LocalVerifyMlDsa(message, signature);
+    }
+}
+
+// ML-DSA operations involve larger quantities of data than most other algorithms.  Try doing as
+// many signing operations as possible in parallel.
+//
+// The operations are allowed to fail (typically with TOO_MANY_OPERATIONS or
+// MEMORY_ALLOCATION_FAILED) but the KeyMint device should survive the process.
+TEST_P(MlDsaTest, ParallelSign) {
+    const int count = 16;
+    string message = "12345678901234567890123456789012";
+    auto params = AuthorizationSetBuilder().Digest(Digest::NONE);
+
+    for (MlDsaVariant variant : kVariants) {
+        SCOPED_TRACE(testing::Message() << variant);
+
+        // Expect to be able to create the full set of keyblobs.
+        vector<vector<uint8_t>> key_blobs;
+        for (int i = 0; i < count; i++) {
+            vector<uint8_t> key_blob;
+            vector<KeyCharacteristics> chars;
+            ErrorCode result = GenerateKey(KeyParams(variant), &key_blob, &chars);
+            ASSERT_EQ(result, ErrorCode::OK);
+            key_blobs.push_back(key_blob);
+        }
+
+        // However, `begin()`ning an operation with each of the keyblobs might not succeed.
+        vector<std::shared_ptr<IKeyMintOperation>> ops;
+        for (const auto& key_blob : key_blobs) {
+            AuthorizationSet out_params;
+            std::shared_ptr<IKeyMintOperation> op;
+            ErrorCode result = Begin(KeyPurpose::SIGN, key_blob, params, &out_params, op);
+            if (result == ErrorCode::OK) {
+                ops.push_back(op);
+            } else {
+                GTEST_LOG_(INFO) << "Begin failed with: " << result;
+            }
+        }
+        size_t op_count = ops.size();
+
+        // Even if an operation `begin()`s OK, it might not succeed on `update()`.
+        vector<std::shared_ptr<IKeyMintOperation>> updated_ops;
+        for (auto op : ops) {
+            string output;
+            ErrorCode result = Update(&op, message, &output, /* HAT= */ std::nullopt,
+                                      /* timestamp= */ std::nullopt);
+            if (result == ErrorCode::OK) {
+                EXPECT_EQ(output.size(), 0);
+                updated_ops.push_back(op);
+            } else {
+                GTEST_LOG_(INFO) << "Update failed with: " << result;
+            }
+        }
+        size_t updated_op_count = updated_ops.size();
+
+        // An operation that is OK so far might not succeed on `finish()`.
+        int success_count = 0;
+        for (auto& op : updated_ops) {
+            string sig;
+            ErrorCode result = Finish(&op, /* message= */ {}, /* signature= */ {},
+                                      /* output= */ &sig, /* HAT = */ std::nullopt,
+                                      /* timestamp= */ std::nullopt);
+            if (result == ErrorCode::OK) {
+                success_count++;
+            } else {
+                GTEST_LOG_(INFO) << "Finish failed with: " << result;
+            }
+        }
+        GTEST_LOG_(INFO) << "Successful " << variant << " ops: " << success_count << ", "
+                         << "updated ops: " << updated_op_count << ", "
+                         << "started ops: " << op_count << ", "
+                         << "on " << count << " key gens";
+
+        // Tidy up the keyblobs (and as a side effect, confirm that KeyMint is still up).
+        for (auto key_blob : key_blobs) {
+            DeleteKey(&key_blob);
+        }
     }
 }
 
@@ -474,24 +561,8 @@ TEST_P(MlDsaTest, ImportRawSeed) {
         SCOPED_TRACE(testing::Message() << variant);
 
         ErrorCode result = ImportKey(KeyParams(variant), KeyFormat::RAW, kSeed);
-        EXPECT_EQ(result, ErrorCode::OK);
-        ASSERT_GT(key_blob_.size(), 0U);
-
-        CheckCommonParams(key_characteristics_, KeyOrigin::IMPORTED);
-        CheckCharacteristics(key_blob_, key_characteristics_);
-
-        ASSERT_GT(cert_chain_.size(), 0);
-        EXPECT_TRUE(ChainSignaturesAreValid(cert_chain_));
-
-        AuthorizationSet crypto_params = SecLevelAuthorizations(key_characteristics_);
-        EXPECT_TRUE(crypto_params.Contains(TAG_ALGORITHM, Algorithm::ML_DSA));
-        EXPECT_TRUE(crypto_params.Contains(TAG_ML_DSA_VARIANT, variant))
-                << "Variant " << variant << "missing";
-
-        // Check a signature against public key locally created from the seed.
-        string message = "12345678901234567890123456789012";
-        string signature = SignMessage(message, AuthorizationSetBuilder().Digest(Digest::NONE));
-        DefaultSeedVerify(message, signature, variant);
+        ASSERT_EQ(result, ErrorCode::OK);
+        CheckMlDsaKey(variant, KeyOrigin::IMPORTED);
     }
 }
 
@@ -543,7 +614,26 @@ TEST_P(MlDsaTest, ImportRawSeedUnknownVariant) {
 }
 
 TEST_P(MlDsaTest, ImportWrappedRawSeed) {
-    GTEST_SKIP() << "TODO: add test for import of a wrapped ML-DSA private key seed";
+    // The helper code to build a wrapped key for import uses the C++ system/keymaster code, which
+    // has not been updated to support v5 of the KeyMint HAL.  It therefore does not support
+    // Tag::ML_DSA_VARIANT, but that tag is required for secure-import of a `KeyFormat::RAW` key (as
+    // that's the only way to distinguish an ML-DSA-65 seed from an ML-DSA-87 seed).
+    GTEST_SKIP() << "TODO: add test for import of a wrapped ML-DSA private key raw seed";
+}
+
+TEST_P(MlDsaTest, ImportWrappedPkcs8Seed) {
+    for (MlDsaVariant variant : kVariants) {
+        SCOPED_TRACE(testing::Message() << variant);
+        string key_data = kPkcs8SeedData.at(variant);
+
+        // Wrap up the PKCS#8 key; note that the import parameters don't specify
+        // `Tag::ML_DSA_VARIANT`.
+        WrappedKeyInfo info;
+        WrapKey({key_data.begin(), key_data.end()}, KeyFormat::PKCS8, ImportParams(), &info);
+        int64_t biometric_sid = 24;
+        ASSERT_EQ(ErrorCode::OK, ImportWrappedKey(info, 0, 0));
+        CheckMlDsaKey(variant, KeyOrigin::SECURELY_IMPORTED);
+    }
 }
 
 TEST_P(MlDsaTest, ImportPkcs8SeedUnspecifiedVariant) {
@@ -552,25 +642,8 @@ TEST_P(MlDsaTest, ImportPkcs8SeedUnspecifiedVariant) {
 
         string data = kPkcs8SeedData.at(variant);
         ErrorCode result = ImportKey(ImportParams(), KeyFormat::PKCS8, data);
-        EXPECT_EQ(result, ErrorCode::OK);
-        ASSERT_GT(key_blob_.size(), 0U);
-
-        CheckCommonParams(key_characteristics_, KeyOrigin::IMPORTED);
-        CheckCharacteristics(key_blob_, key_characteristics_);
-
-        ASSERT_GT(cert_chain_.size(), 0);
-        EXPECT_TRUE(ChainSignaturesAreValid(cert_chain_));
-
-        AuthorizationSet crypto_params = SecLevelAuthorizations(key_characteristics_);
-        EXPECT_TRUE(crypto_params.Contains(TAG_ALGORITHM, Algorithm::ML_DSA));
-        // Characteristics should inclkude the variant deduced from the PKCS#8 data.
-        EXPECT_TRUE(crypto_params.Contains(TAG_ML_DSA_VARIANT, variant))
-                << "Variant " << variant << "missing";
-
-        // Check a signature against public key locally created from the seed.
-        string message = "12345678901234567890123456789012";
-        string signature = SignMessage(message, AuthorizationSetBuilder().Digest(Digest::NONE));
-        DefaultSeedVerify(message, signature, variant);
+        ASSERT_EQ(result, ErrorCode::OK);
+        CheckMlDsaKey(variant, KeyOrigin::IMPORTED);
     }
 }
 
@@ -581,24 +654,8 @@ TEST_P(MlDsaTest, ImportPkcs8SeedMatchingVariant) {
         string data = kPkcs8SeedData.at(variant);
         ErrorCode result = ImportKey(ImportParams().Authorization(TAG_ML_DSA_VARIANT, variant),
                                      KeyFormat::PKCS8, data);
-        EXPECT_EQ(result, ErrorCode::OK);
-        ASSERT_GT(key_blob_.size(), 0U);
-
-        CheckCommonParams(key_characteristics_, KeyOrigin::IMPORTED);
-        CheckCharacteristics(key_blob_, key_characteristics_);
-
-        ASSERT_GT(cert_chain_.size(), 0);
-        EXPECT_TRUE(ChainSignaturesAreValid(cert_chain_));
-
-        AuthorizationSet crypto_params = SecLevelAuthorizations(key_characteristics_);
-        EXPECT_TRUE(crypto_params.Contains(TAG_ALGORITHM, Algorithm::ML_DSA));
-        EXPECT_TRUE(crypto_params.Contains(TAG_ML_DSA_VARIANT, variant))
-                << "Variant " << variant << "missing";
-
-        // Check a signature against public key locally created from the seed.
-        string message = "12345678901234567890123456789012";
-        string signature = SignMessage(message, AuthorizationSetBuilder().Digest(Digest::NONE));
-        DefaultSeedVerify(message, signature, variant);
+        ASSERT_EQ(result, ErrorCode::OK);
+        CheckMlDsaKey(variant, KeyOrigin::IMPORTED);
     }
 }
 
@@ -656,11 +713,11 @@ TEST_P(MlDsaTest, AttestToEcdsaKey) {
 
         CheckCommonParams(attest_key_chars, KeyOrigin::GENERATED);
         CheckCharacteristics(attest_key.keyBlob, attest_key_chars);
-        ASSERT_GT(cert_chain_.size(), 0);
+        EXPECT_GT(cert_chain_.size(), 0);
         AuthorizationSet crypto_params = SecLevelAuthorizations(attest_key_chars);
         EXPECT_TRUE(crypto_params.Contains(TAG_ALGORITHM, Algorithm::ML_DSA));
         EXPECT_TRUE(crypto_params.Contains(TAG_ML_DSA_VARIANT, variant))
-                << "Variant " << variant << "missing";
+                << "Variant " << variant << " missing";
 
         // Generate an ECDSA P256 key that is attested to by ML-DSA.
         auto challenge = "foo";
@@ -678,7 +735,7 @@ TEST_P(MlDsaTest, AttestToEcdsaKey) {
                                              &attested_key_characteristics, &attested_key_chain));
         KeyBlobDeleter attested_deleter(keymint_, attested_key_blob);
 
-        ASSERT_GT(attested_key_chain.size(), 0);
+        EXPECT_GT(attested_key_chain.size(), 0);
 
         // Attestation by itself is not valid (last entry is not self-signed).
         EXPECT_FALSE(ChainSignaturesAreValid(attested_key_chain));

@@ -91,6 +91,8 @@ filegroup {
         "bluetooth_hal.cc",
         "bluetooth_hci.cc",
         "hci_router.cc",
+        "hci_router_interface.cc",
+        "hci_router_async.cc",
         "hci_router_client.cc",
         "hci_router_client_agent.cc",
         "hci_proxy_aidl.cc",
@@ -201,6 +203,7 @@ filegroup {
         "util/power/wakelock.cc",
         "util/power/wakelock_watchdog.cc",
         "util/power/power_interface.cc",
+        "util/power/wakelock_logger.cc",
     ],
 }
 
@@ -209,7 +212,7 @@ filegroup {
     srcs: [
         "transport/device_control/uart_manager.cc",
         "transport/device_control/power_manager.cc",
-        "transport/transport_interface.cc",
+        "transport/transport_factory.cc",
         "transport/vendor_packet_validator.cc",
         "transport/vendor_packet_validator_interface.cc",
         "transport/hci_packet_rescuer.cc",
@@ -366,6 +369,7 @@ cc_test {
         "hci_router_client.cc",
         "bluetooth_address_test.cc",
         "util/worker_test.cc",
+        "util/time_queue_test.cc",
         ":test_mock_router_srcs",
     ],
     static_libs: [
@@ -398,6 +402,10 @@ cc_test {
     srcs: [
         "hci_router.cc",
         "hci_router_test.cc",
+        "hci_router_interface.cc",
+        "hci_router_interface_test.cc",
+        "hci_router_async.cc",
+        "hci_router_async_test.cc",
         "hci_router_client.cc",
         "extensions/thread/socket_processor.cc",
         "extensions/thread/thread_daemon.cc",
@@ -689,13 +697,13 @@ cc_test {
 }
 
 cc_test {
-    name: "bluetooth_hal_transport_interface_test",
+    name: "bluetooth_hal_transport_factory_test",
     defaults: ["bluetooth_hal_test_defaults"],
     srcs: [
         "transport/device_control/uart_manager.cc",
         "transport/device_control/power_manager.cc",
-        "transport/transport_interface.cc",
-        "transport/transport_interface_test.cc",
+        "transport/transport_factory.cc",
+        "transport/transport_factory_test.cc",
         "transport/vendor_packet_validator.cc",
         "transport/vendor_packet_validator_interface.cc",
         "transport/hci_packet_rescuer.cc",
@@ -726,7 +734,7 @@ cc_test {
         "config/hal_config_loader.cc",
         "transport/device_control/uart_manager.cc",
         "transport/device_control/power_manager.cc",
-        "transport/transport_interface.cc",
+        "transport/transport_factory.cc",
         "transport/vendor_packet_validator.cc",
         "transport/vendor_packet_validator_interface.cc",
         "transport/hci_packet_rescuer.cc",

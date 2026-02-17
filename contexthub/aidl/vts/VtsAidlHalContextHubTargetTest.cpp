@@ -51,10 +51,11 @@ using ::aidl::android::hardware::contexthub::BnContextHubCallback;
 using ::aidl::android::hardware::contexthub::BnEndpointCallback;
 using ::aidl::android::hardware::contexthub::ContextHubInfo;
 using ::aidl::android::hardware::contexthub::ContextHubMessage;
-using ::aidl::android::hardware::contexthub::DataFlowConsumerHandle;
+using ::aidl::android::hardware::contexthub::DataFlowAlertFds;
 using ::aidl::android::hardware::contexthub::DataFlowId;
 using ::aidl::android::hardware::contexthub::DataFlowInfo;
-using ::aidl::android::hardware::contexthub::DataFlowNotificationFds;
+using ::aidl::android::hardware::contexthub::DataFlowSinkContext;
+using ::aidl::android::hardware::contexthub::DataFlowSinkRegistrationParams;
 using ::aidl::android::hardware::contexthub::EndpointId;
 using ::aidl::android::hardware::contexthub::EndpointInfo;
 using ::aidl::android::hardware::contexthub::ErrorCode;
@@ -79,11 +80,9 @@ using ::android::contexthub::data_flow::AllocatorRegion;
 using ::android::contexthub::data_flow::Consumer;
 using ::android::contexthub::data_flow::ConsumerManager;
 using ::android::contexthub::data_flow::ConsumerPolicyBuilder;
-using ::android::contexthub::data_flow::createQueue;
 using ::android::contexthub::data_flow::DataNotifier;
 using ::android::contexthub::data_flow::NotificationManager;
 using ::android::contexthub::data_flow::Producer;
-using ::android::contexthub::data_flow::queueLayout;
 using ::android::contexthub::data_flow::Region;
 using ::android::contexthub::data_flow::RegionManager;
 using ::android::contexthub::data_flow::RemoteNotifyArgs;
@@ -158,8 +157,8 @@ class TestEndpointCallback : public BnEndpointCallback {
         mWasOnEndpointSessionOpenCompleteCalled = false;
     }
 
-    DataFlowConsumerHandle deepCopyDataFlowConsumerHandle(const DataFlowConsumerHandle& src) {
-        DataFlowConsumerHandle dst;
+    DataFlowSinkContext deepCopyDataFlowSinkContext(const DataFlowSinkContext& src) {
+        DataFlowSinkContext dst;
         dst.id = src.id;
 
         if (src.info.has_value()) {
@@ -177,51 +176,48 @@ class TestEndpointCallback : public BnEndpointCallback {
             dst.info->metadataOffsetBytes = src.info->metadataOffsetBytes;
 
             // Deep copy EventFDs
-            auto maybeFds = ::android::contexthub::data_flow::dupEventFds(src.info->notificationFds,
+            auto maybeFds = ::android::contexthub::data_flow::dupEventFds(src.info->alertFds,
                                                                           /*needsHalAck=*/false);
             if (maybeFds.ok()) {
-                dst.info->notificationFds = std::move(*maybeFds);
+                dst.info->alertFds = std::move(*maybeFds);
             } else {
-                ALOGE("onDataFlowHostConsumerRegistered: failed to dup producer notificationFds");
+                ALOGE("onDataFlowHostSinkRegistered: failed to dup source alertFds");
             }
         }
 
-        // Deep copy Consumer Region if exists
-        if (src.consumerRegion.has_value()) {
-            dst.consumerRegion.emplace();
-            dst.consumerRegion->id = src.consumerRegion->id;
-            dst.consumerRegion->sizeBytes = src.consumerRegion->sizeBytes;
-            if (src.consumerRegion->sharedMemory.get() >= 0) {
-                int dupFd = dup(src.consumerRegion->sharedMemory.get());
-                dst.consumerRegion->sharedMemory = ScopedFileDescriptor(dupFd);
+        // Deep copy Sink Region if exists
+        if (src.sinkMetadataRegion.has_value()) {
+            dst.sinkMetadataRegion.emplace();
+            dst.sinkMetadataRegion->id = src.sinkMetadataRegion->id;
+            dst.sinkMetadataRegion->sizeBytes = src.sinkMetadataRegion->sizeBytes;
+            if (src.sinkMetadataRegion->sharedMemory.get() >= 0) {
+                int dupFd = dup(src.sinkMetadataRegion->sharedMemory.get());
+                dst.sinkMetadataRegion->sharedMemory = ScopedFileDescriptor(dupFd);
             }
-            dst.consumerRegion->permissions = src.consumerRegion->permissions;
+            dst.sinkMetadataRegion->permissions = src.sinkMetadataRegion->permissions;
         }
 
         dst.metadataOffsetBytes = src.metadataOffsetBytes;
 
-        // Deep copy Consumer EventFDs
-        auto maybeFds = ::android::contexthub::data_flow::dupEventFds(src.notificationFds,
+        // Deep copy Sink EventFDs
+        auto maybeFds = ::android::contexthub::data_flow::dupEventFds(src.alertFds,
                                                                       /*needsHalAck=*/true);
         if (maybeFds.ok()) {
-            dst.notificationFds = std::move(*maybeFds);
+            dst.alertFds = std::move(*maybeFds);
         } else {
-            ALOGE("onDataFlowHostConsumerRegistered: failed to dup consumer notificationFds");
+            ALOGE("onDataFlowHostSinkRegistered: failed to dup sink alertFds");
         }
 
         return dst;
     }
 
-    ScopedAStatus onDataFlowHostConsumerRegistered(const DataFlowConsumerHandle& handle,
-                                                   const EndpointId& producerId,
-                                                   const EndpointId& consumerId,
-                                                   const ::std::optional<Message>& /*msg*/,
-                                                   int32_t /*sessionId*/) override {
+    ScopedAStatus onDataFlowHostSinkRegistered(
+            const DataFlowSinkRegistrationParams& params) override {
         std::unique_lock<std::mutex> lock(mMutex);
-        mDataFlowHandle = deepCopyDataFlowConsumerHandle(handle);
-        mProducerId = producerId;
-        mConsumerId = consumerId;
-        mWasOnDataFlowHostConsumerRegisteredCalled = true;
+        mSinkContext = deepCopyDataFlowSinkContext(params.context);
+        mSourceId = params.sourceId;
+        mSinkId = params.sinkId;
+        mWasOnDataFlowHostSinkRegisteredCalled = true;
         mCondVar.notify_one();
         return ScopedAStatus::ok();
     }
@@ -233,15 +229,13 @@ class TestEndpointCallback : public BnEndpointCallback {
         return ScopedAStatus::ok();
     }
 
-    bool wasOnDataFlowHostConsumerRegisteredCalled() {
-        return mWasOnDataFlowHostConsumerRegisteredCalled;
+    bool wasOnDataFlowHostSinkRegisteredCalled() { return mWasOnDataFlowHostSinkRegisteredCalled; }
+    void resetWasOnDataFlowHostSinkRegisteredCalled() {
+        mWasOnDataFlowHostSinkRegisteredCalled = false;
     }
-    void resetWasOnDataFlowHostConsumerRegisteredCalled() {
-        mWasOnDataFlowHostConsumerRegisteredCalled = false;
-    }
-    const DataFlowConsumerHandle& getDataFlowHandle() { return mDataFlowHandle; }
-    EndpointId getProducerId() { return mProducerId; }
-    EndpointId getConsumerId() { return mConsumerId; }
+    const DataFlowSinkContext& getSinkContext() { return mSinkContext; }
+    EndpointId getSourceId() { return mSourceId; }
+    EndpointId getSinkId() { return mSinkId; }
 
     std::mutex& getMutex() { return mMutex; }
     std::condition_variable& getCondVar() { return mCondVar; }
@@ -252,10 +246,10 @@ class TestEndpointCallback : public BnEndpointCallback {
     std::mutex mMutex;
     std::condition_variable mCondVar;
     bool mWasOnEndpointSessionOpenCompleteCalled = false;
-    bool mWasOnDataFlowHostConsumerRegisteredCalled = false;
-    DataFlowConsumerHandle mDataFlowHandle;
-    EndpointId mProducerId;
-    EndpointId mConsumerId;
+    bool mWasOnDataFlowHostSinkRegisteredCalled = false;
+    DataFlowSinkContext mSinkContext;
+    EndpointId mSourceId;
+    EndpointId mSinkId;
 };
 
 class ContextHubAidl : public testing::TestWithParam<std::tuple<std::string, int32_t>> {
@@ -1110,7 +1104,7 @@ TEST_P(ContextHubEndpointAidlWithTestMode, TestFreeSharedDataRegionDoubleFree) {
     EXPECT_EQ(status.getExceptionCode(), EX_ILLEGAL_ARGUMENT);
 }
 
-TEST_P(ContextHubEndpointAidlWithTestMode, TestRegisterHostProducerDataFlowBasic) {
+TEST_P(ContextHubEndpointAidlWithTestMode, TestRegisterHostSourceDataFlowBasic) {
     if (!registerDefaultHub()) GTEST_SKIP() << "Not implemented";
 
     // Allocate Region
@@ -1133,13 +1127,13 @@ TEST_P(ContextHubEndpointAidlWithTestMode, TestRegisterHostProducerDataFlowBasic
     info.region.id = region.id;
     // Mock eventfds
     int efd = eventfd(0, 0);
-    info.notificationFds.waking = ScopedFileDescriptor(dup(efd));
-    info.notificationFds.nonWaking = ScopedFileDescriptor(dup(efd));
-    info.notificationFds.halAck = ScopedFileDescriptor(dup(efd));
+    info.alertFds.waking = ScopedFileDescriptor(dup(efd));
+    info.alertFds.nonWaking = ScopedFileDescriptor(dup(efd));
+    info.alertFds.halAck = ScopedFileDescriptor(dup(efd));
     close(efd);
 
     int32_t dataFlowId = -1;
-    status = mHubInterface->registerDataFlowHostProducer(hostEndpoint, info, &dataFlowId);
+    status = mHubInterface->registerDataFlowHostSource(hostEndpoint, info, &dataFlowId);
     if (status.getExceptionCode() == EX_UNSUPPORTED_OPERATION ||
         status.getStatus() == STATUS_UNKNOWN_TRANSACTION) {
         GTEST_SKIP() << "Not supported -> old API; or not implemented";
@@ -1148,13 +1142,13 @@ TEST_P(ContextHubEndpointAidlWithTestMode, TestRegisterHostProducerDataFlowBasic
     EXPECT_GE(dataFlowId, 0);
 
     // Unregister Data Flow
-    EXPECT_TRUE(mHubInterface->unregisterDataFlowHostProducer(dataFlowId).isOk());
+    EXPECT_TRUE(mHubInterface->unregisterDataFlowHostSource(dataFlowId).isOk());
 
     // Free Region
     EXPECT_TRUE(mHubInterface->freeSharedDataRegion(region.id).isOk());
 }
 
-TEST_P(ContextHubEndpointAidlWithTestMode, TestHostProducerDataFlowInvalidRegion) {
+TEST_P(ContextHubEndpointAidlWithTestMode, TestHostSourceDataFlowInvalidRegion) {
     if (!registerDefaultHub()) GTEST_SKIP() << "Not implemented";
 
     EndpointId hostEndpoint;
@@ -1164,14 +1158,14 @@ TEST_P(ContextHubEndpointAidlWithTestMode, TestHostProducerDataFlowInvalidRegion
     DataFlowInfo info;
     info.region.id = 99999;  // Invalid Region ID
     int efd = eventfd(0, 0);
-    info.notificationFds.waking = ScopedFileDescriptor(dup(efd));
-    info.notificationFds.nonWaking = ScopedFileDescriptor(dup(efd));
-    info.notificationFds.halAck = ScopedFileDescriptor(dup(efd));
+    info.alertFds.waking = ScopedFileDescriptor(dup(efd));
+    info.alertFds.nonWaking = ScopedFileDescriptor(dup(efd));
+    info.alertFds.halAck = ScopedFileDescriptor(dup(efd));
     close(efd);
 
     int32_t dataFlowId = -1;
     ScopedAStatus status =
-            mHubInterface->registerDataFlowHostProducer(hostEndpoint, info, &dataFlowId);
+            mHubInterface->registerDataFlowHostSource(hostEndpoint, info, &dataFlowId);
     if (status.getExceptionCode() == EX_UNSUPPORTED_OPERATION ||
         status.getStatus() == STATUS_UNKNOWN_TRANSACTION) {
         GTEST_SKIP() << "Not supported -> old API; or not implemented";
@@ -1234,21 +1228,20 @@ class ContextHubDataFlowEchoTest : public ContextHubEndpointAidlWithTestMode {
     std::vector<DataFlowId> mReceivedEvents;
 };
 
-class RegisterOffloadConsumerCallback
-    : public IEndpointCommunication::BnRegisterOffloadConsumerCallback {
+class RegisterOffloadSinkCallback : public IEndpointCommunication::BnRegisterOffloadSinkCallback {
   public:
-    explicit RegisterOffloadConsumerCallback(AllocatorRegion& hostRegion,
-                                             RegionManager* regionManager, EndpointId halEndpointId,
-                                             int32_t flowId, Producer<uint8_t>* producer)
+    explicit RegisterOffloadSinkCallback(AllocatorRegion& hostRegion, RegionManager* regionManager,
+                                         EndpointId halEndpointId, int32_t flowId,
+                                         Producer<uint8_t>* producer)
         : mHostRegion(&hostRegion),
           mRegionManager(regionManager),
           mHalEndpointId(halEndpointId),
           mFlowId(flowId),
           mProducer(producer) {}
 
-    ScopedAStatus addConsumerInRegion(const std::optional<SharedDataRegion>& region,
-                                      int64_t* _aidl_return) override {
-        AllocatorRegion* customerRegion = mHostRegion;
+    ScopedAStatus addSinkInRegion(const std::optional<SharedDataRegion>& region,
+                                  int64_t* _aidl_return) override {
+        AllocatorRegion* sinkRegion = mHostRegion;
         if (region.has_value()) {
             auto metadataRegionRes = mRegionManager->mapOffloadConsumerRegion(
                     region.value(), mHalEndpointId, mFlowId);
@@ -1257,7 +1250,7 @@ class RegisterOffloadConsumerCallback
                       metadataRegionRes.status().str());
                 return ScopedAStatus::fromExceptionCode(EX_ILLEGAL_STATE);
             }
-            customerRegion = &metadataRegionRes.value();
+            sinkRegion = &metadataRegionRes.value();
         }
 
         ConsumerPolicyBuilder policy;
@@ -1266,13 +1259,13 @@ class RegisterOffloadConsumerCallback
         pw::ConstByteSpan nameSpan(reinterpret_cast<const std::byte*>(kConsumerName), 15);
         pw::Result<uint32_t> consDescOffsetRes;
         consDescOffsetRes =
-                mProducer->getConsumerManager().addConsumer(nameSpan, policy, customerRegion);
+                mProducer->getConsumerManager().addConsumer(nameSpan, policy, sinkRegion);
         if (!consDescOffsetRes.ok()) {
             ALOGE("VTS: mProducer->getConsumerManager().addConsumer() failed with status: %s",
                   consDescOffsetRes.status().str());
         }
 
-        ALOGD("VTS: Consumer Descriptor Added at offset: %u", consDescOffsetRes.value());
+        ALOGD("VTS: Sink Descriptor Added at offset: %u", consDescOffsetRes.value());
 
         *_aidl_return = consDescOffsetRes.value();
 
@@ -1334,31 +1327,10 @@ TEST_P(ContextHubDataFlowEchoTest, TestDataFlowEchoVerifyContent) {
             << "mapHostProducerRegion failed: " << hostProdRegionRes.status().str();
     AllocatorRegion& hostRegion = hostProdRegionRes.value();
 
-    // 3. Initialize Queue
+    // 3. Create Producer
     DataNotifier dataNotifier;
-
     constexpr size_t kQueueBlockCapacity = 1024;
-    pw::Result<void*> queueRes =
-            createQueue<uint8_t, kQueueBlockCapacity>(*hostRegion.allocator, /*local=*/false);
-
-    ASSERT_TRUE(queueRes.ok()) << "Queue creation failed with status: "
-                               << static_cast<int>(queueRes.status().code());
-    void* queuePtr = queueRes.value();
-
-    auto queueDeleter = [&](void* ptr) {
-        if (hostRegion.allocator && ptr) {
-            hostRegion.allocator->Deallocate(ptr, queueLayout());
-            ALOGD("VTS: Queue memory deallocated via RAII");
-        }
-    };
-    std::unique_ptr<void, decltype(queueDeleter)> queueGuard(queuePtr, queueDeleter);
-
-    // Calculate offset for HAL
-    size_t queueOffset = reinterpret_cast<uintptr_t>(queuePtr) - hostRegion.base;
-    ALOGD("VTS: Queue allocated at offset: %zu", queueOffset);
-
-    // 4. Create Producer
-    auto producerRes = Producer<uint8_t>::createRemote(hostRegion, queuePtr,
+    auto producerRes = Producer<uint8_t>::createRemote(hostRegion, kQueueBlockCapacity,
                                                        16,  // max blocks
                                                        1,   // min blocks
                                                        dataNotifier,
@@ -1367,8 +1339,10 @@ TEST_P(ContextHubDataFlowEchoTest, TestDataFlowEchoVerifyContent) {
                                   << producerRes.status().str();
     std::optional<Producer<uint8_t>> producerOpt;
     producerOpt.emplace(std::move(producerRes.value()));
+    size_t queueOffset = producerOpt->getQueueOffset();
+    ALOGD("VTS: Queue allocated at offset: %zu", queueOffset);
 
-    // 5. Setup Notifications
+    // 4. Setup Notifications
     auto prepRes = mNotificationManager->prepareHostProducerDataFlowInfo();
     ASSERT_TRUE(prepRes.ok());
     auto [dfInfo, notifyHandle] = std::move(prepRes.value());
@@ -1376,54 +1350,55 @@ TEST_P(ContextHubDataFlowEchoTest, TestDataFlowEchoVerifyContent) {
     dfInfo.region.id = regionId;
     dfInfo.metadataOffsetBytes = queueOffset;
 
-    // 6. Register Producer
+    // 5. Register Producer
     EndpointId hostEndpoint;
     hostEndpoint.hubId = kDefaultHubId;
     hostEndpoint.id = 0x1234;
     int32_t flowIdVal = -1;
-    ASSERT_TRUE(
-            mHubInterface->registerDataFlowHostProducer(hostEndpoint, dfInfo, &flowIdVal).isOk());
-    ALOGD("VTS: Host Producer Registered (FlowID=%d)", flowIdVal);
+    ASSERT_TRUE(mHubInterface->registerDataFlowHostSource(hostEndpoint, dfInfo, &flowIdVal).isOk());
+    ALOGD("VTS: Host Source Registered (FlowID=%d)", flowIdVal);
 
     ASSERT_TRUE(mNotificationManager->activateHostProducerDataFlow(flowIdVal, notifyHandle).ok());
     ASSERT_TRUE(mRegionManager->linkHostProducerDataFlowToRegion(regionId, flowIdVal).ok());
     ALOGD("VTS: Host Producer Activated and Linked");
 
-    // 7. Register Consumer (HAL)
-    ALOGD("VTS: Attempting to add consumer");
-    pw::Result<DataFlowConsumerHandle> halConsHandleRes =
+    // 6. Register Sink (HAL)
+    ALOGD("VTS: Attempting to add sink");
+    pw::Result<DataFlowSinkContext> halSinkContextRes =
             mNotificationManager->addOffloadConsumerAndCreateHandle(flowIdVal, halEndpointId);
-    ASSERT_TRUE(halConsHandleRes.ok());
-    halConsHandleRes.value().id.hubId = kDefaultHubId;
-    halConsHandleRes.value().id.id = flowIdVal;
+    ASSERT_TRUE(halSinkContextRes.ok());
+    halSinkContextRes.value().id.hubId = kDefaultHubId;
+    halSinkContextRes.value().id.id = flowIdVal;
 
-    mEndpointCb->resetWasOnDataFlowHostConsumerRegisteredCalled();
-    auto callback = SharedRefBase::make<RegisterOffloadConsumerCallback>(
+    mEndpointCb->resetWasOnDataFlowHostSinkRegisteredCalled();
+    auto callback = SharedRefBase::make<RegisterOffloadSinkCallback>(
             hostRegion, mRegionManager.get(), halEndpointId, flowIdVal, &producerOpt.value());
-    ASSERT_TRUE(mHubInterface
-                        ->registerDataFlowOffloadConsumer(std::move(halConsHandleRes).value(),
-                                                          halEndpointId, callback, std::nullopt, -1)
-                        .isOk());
+    DataFlowSinkRegistrationParams params;
+    params.context = std::move(halSinkContextRes).value();
+    params.sinkId = halEndpointId;
+    params.sourceId = hostEndpoint;
+    params.sessionId = -1;
+    ASSERT_TRUE(mHubInterface->registerDataFlowOffloadSink(params, callback).isOk());
 
-    // 8. Wait for Echo Setup
+    // 7. Wait for Echo Setup
     ALOGD("VTS: Waiting for Echo Callback...");
     {
         std::unique_lock<std::mutex> lock(mEndpointCb->getMutex());
         bool signaled = mEndpointCb->getCondVar().wait_for(lock, std::chrono::seconds(5), [&] {
-            return mEndpointCb->wasOnDataFlowHostConsumerRegisteredCalled();
+            return mEndpointCb->wasOnDataFlowHostSinkRegisteredCalled();
         });
-        ASSERT_TRUE(signaled) << "Timeout waiting for HAL to register echo consumer";
+        ASSERT_TRUE(signaled) << "Timeout waiting for HAL to register echo sink";
     }
     ALOGD("VTS: Received Echo Callback");
 
-    // Setup consumer
-    const DataFlowConsumerHandle& echoHandle = mEndpointCb->getDataFlowHandle();
+    // Setup sink
+    const DataFlowSinkContext& echoHandle = mEndpointCb->getSinkContext();
     ASSERT_TRUE(echoHandle.info.has_value());
 
     ALOGD("VTS: FDs Check - ConsWake: %d, ConsNonWake: %d, Ack: %d, ProdWake: %d, ProdNonWake: %d",
-          echoHandle.notificationFds.waking.get(), echoHandle.notificationFds.nonWaking.get(),
-          echoHandle.notificationFds.halAck.get(), echoHandle.info->notificationFds.waking.get(),
-          echoHandle.info->notificationFds.nonWaking.get());
+          echoHandle.alertFds.waking.get(), echoHandle.alertFds.nonWaking.get(),
+          echoHandle.alertFds.halAck.get(), echoHandle.info->alertFds.waking.get(),
+          echoHandle.info->alertFds.nonWaking.get());
 
     RegionManager::RegionToMap regionToMap;
     regionToMap.id = echoHandle.info->region.id;
@@ -1435,7 +1410,7 @@ TEST_P(ContextHubDataFlowEchoTest, TestDataFlowEchoVerifyContent) {
     ASSERT_TRUE(mapConsRes.ok());
     auto [echoRegion, _] = std::move(mapConsRes.value());
 
-    // Enables host consumer on the echo data flow.
+    // Enables host sink on the echo data flow.
     ASSERT_TRUE(mNotificationManager->enableHostConsumerFromHandle(echoHandle).ok());
 
     auto consumerRes = Consumer<uint8_t>::createRemote(
@@ -1446,7 +1421,7 @@ TEST_P(ContextHubDataFlowEchoTest, TestDataFlowEchoVerifyContent) {
     std::optional<Consumer<uint8_t>> consumerOpt;
     consumerOpt.emplace(std::move(consumerRes.value()));
 
-    // 9. Verify Echo
+    // 8. Verify Echo
     uint8_t testVal = 0x42;
     producerOpt->push(testVal);
     mNotificationManager->notifyOffloadConsumer(halEndpointId, true);
@@ -1476,9 +1451,9 @@ TEST_P(ContextHubDataFlowEchoTest, TestDataFlowEchoVerifyContent) {
 
     mNotificationManager->disableHostConsumer(echoHandle.id);
     mRegionManager->unlinkHostConsumerDataFlow(echoHandle.id);
-    mHubInterface->unregisterDataFlowHostConsumer(hostEndpoint, echoHandle.id);
+    mHubInterface->unregisterDataFlowHostSink(hostEndpoint, echoHandle.id);
     mNotificationManager->removeHostProducerDataFlow(flowIdVal);
-    mHubInterface->unregisterDataFlowHostProducer(flowIdVal);
+    mHubInterface->unregisterDataFlowHostSource(flowIdVal);
     mRegionManager->unmapHostProducerRegion(regionId);
     mHubInterface->freeSharedDataRegion(regionId);
 }
