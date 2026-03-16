@@ -85,7 +85,6 @@ using ::android::contexthub::data_flow::NotificationManager;
 using ::android::contexthub::data_flow::Producer;
 using ::android::contexthub::data_flow::Region;
 using ::android::contexthub::data_flow::RegionManager;
-using ::android::contexthub::data_flow::RemoteEndpointId;
 using ::android::contexthub::data_flow::RemoteNotifyArgs;
 using ::android::contexthub::data_flow::internal::ProducerBase;
 using ::android::hardware::contexthub::vts_utils::kNonExistentAppId;
@@ -1256,10 +1255,11 @@ class RegisterOffloadSinkCallback : public IEndpointCommunication::BnRegisterOff
 
         ConsumerPolicyBuilder policy;
         policy.setStreaming();
-        RemoteEndpointId sinkId = {
-                .aidlId = {.hubId = mHalEndpointId.hubId, .endpointId = mHalEndpointId.id}};
+        const char* kConsumerName = "HalEchoConsumer";
+        pw::ConstByteSpan nameSpan(reinterpret_cast<const std::byte*>(kConsumerName), 15);
         pw::Result<uint32_t> consDescOffsetRes;
-        consDescOffsetRes = mProducer->getConsumerManager().addConsumer(sinkId, policy, sinkRegion);
+        consDescOffsetRes =
+                mProducer->getConsumerManager().addConsumer(nameSpan, policy, sinkRegion);
         if (!consDescOffsetRes.ok()) {
             ALOGE("VTS: mProducer->getConsumerManager().addConsumer() failed with status: %s",
                   consDescOffsetRes.status().str());
@@ -1342,11 +1342,11 @@ TEST_P(ContextHubDataFlowEchoTest, TestDataFlowEchoVerifyContent) {
     // 3. Create source
     DataNotifier dataNotifier;
     constexpr size_t kQueueBlockCapacity = 1024;
-    auto producerRes = Producer<uint8_t>::createRemote(
-            hostRegion, kQueueBlockCapacity,
-            16,  // max blocks
-            1,   // min blocks
-            dataNotifier, RemoteNotifyArgs{[](const RemoteEndpointId&) {}});
+    auto producerRes = Producer<uint8_t>::createRemote(hostRegion, kQueueBlockCapacity,
+                                                       16,  // max blocks
+                                                       1,   // min blocks
+                                                       dataNotifier,
+                                                       RemoteNotifyArgs{[](pw::ConstByteSpan) {}});
     ASSERT_TRUE(producerRes.ok()) << "Producer createRemote failed with status: "
                                   << producerRes.status().str();
     std::optional<Producer<uint8_t>> producerOpt;
@@ -1427,7 +1427,7 @@ TEST_P(ContextHubDataFlowEchoTest, TestDataFlowEchoVerifyContent) {
 
     auto consumerRes = Consumer<uint8_t>::createRemote(
             echoRegion, std::nullopt, echoHandle.info->metadataOffsetBytes,
-            echoHandle.metadataOffsetBytes, RemoteNotifyArgs{[](const RemoteEndpointId&) {}});
+            echoHandle.metadataOffsetBytes, RemoteNotifyArgs{[](pw::ConstByteSpan) {}});
     ASSERT_TRUE(consumerRes.ok()) << "failed to create remote consumer: "
                                   << consumerRes.status().str();
     std::optional<Consumer<uint8_t>> consumerOpt;

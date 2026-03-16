@@ -267,8 +267,7 @@ void GnssHalTestTemplate<T_IGnss>::CheckLocation(const V2_0::GnssLocation& locat
     const bool check_more_accuracies =
             (gnss_cb_->info_cbq_.calledCount() > 0 && gnss_cb_->last_info_.yearOfHw >= 2017);
 
-    Utils::checkLocation(location.v1_0, check_speed, check_more_accuracies,
-                         /* aidl_version */ 0);
+    Utils::checkLocation(location.v1_0, check_speed, check_more_accuracies);
 }
 
 template <class T_IGnss>

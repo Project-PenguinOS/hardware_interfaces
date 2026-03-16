@@ -325,8 +325,11 @@ TEST_P(GnssHalTest, TestGnssSvInfoFields) {
     if (aidl_gnss_hal_->getInterfaceVersion() >= 7) {
         for (const auto& sv_info : last_sv_info_list) {
             EXPECT_TRUE(sv_info.elapsedRealtime.has_value());
-            Utils::checkElapsedRealtime(sv_info.elapsedRealtime.value(),
-                                        aidl_gnss_hal_->getInterfaceVersion());
+            ElapsedRealtime elapsedRealtime = sv_info.elapsedRealtime.value();
+            EXPECT_TRUE(elapsedRealtime.flags & ElapsedRealtime::HAS_TIMESTAMP_NS);
+            EXPECT_TRUE(elapsedRealtime.flags & ElapsedRealtime::HAS_TIME_UNCERTAINTY_NS);
+            EXPECT_GT(elapsedRealtime.timestampNs, 0);
+            EXPECT_GE(elapsedRealtime.timeUncertaintyNs, 0);
             EXPECT_TRUE(sv_info.signalType.has_value());
             GnssSignalType signalType = sv_info.signalType.value();
             EXPECT_GT(signalType.carrierFrequencyHz, 0);
