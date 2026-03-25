@@ -661,7 +661,6 @@ LeAudioOffloadAudioProvider::getCapabilitiesMatchedAseConfigurationSettings(
             .sourceAseConfiguration = setting.sourceAseConfiguration,
             .flags = setting.flags,
             .packing = setting.packing,
-            .latencySetting = setting.latencySetting,
     };
 
     // Get a list of all matched AseDirectionConfiguration
@@ -707,7 +706,6 @@ LeAudioOffloadAudioProvider::getRequirementMatchedAseConfigurationSettings(
             .audioContext = requirement.audioContext,
             .packing = setting.packing,
             .flags = setting.flags,
-            .latencySetting = setting.latencySetting,
     };
 
     // The number of AseDirectionRequirement in the requirement

@@ -40,7 +40,7 @@ using android::base::GetBoolProperty;
 namespace aidl::android::hardware::audio::core {
 
 StreamPrimary::StreamPrimary(StreamContext* context, const Metadata& metadata)
-    : StreamAlsaMonoPipe(context, metadata, 3 /*readWriteRetries*/),
+    : StreamAlsa(context, metadata, 3 /*readWriteRetries*/),
       mIsAsynchronous(!!getContext().getAsyncCallback()),
       mStubDriver(getContext()) {
     context->startStreamDataProcessor();
@@ -48,26 +48,25 @@ StreamPrimary::StreamPrimary(StreamContext* context, const Metadata& metadata)
 
 ::android::status_t StreamPrimary::init(DriverCallbackInterface* callback) {
     RETURN_STATUS_IF_ERROR(mStubDriver.init(callback));
-    return StreamAlsaMonoPipe::init(callback);
+    return StreamAlsa::init(callback);
 }
 
 ::android::status_t StreamPrimary::drain(StreamDescriptor::DrainMode mode) {
-    return isStubStreamOnWorker() ? mStubDriver.drain(mode) : StreamAlsaMonoPipe::drain(mode);
+    return isStubStreamOnWorker() ? mStubDriver.drain(mode) : StreamAlsa::drain(mode);
 }
 
 ::android::status_t StreamPrimary::flush() {
-    RETURN_STATUS_IF_ERROR(isStubStreamOnWorker() ? mStubDriver.flush()
-                                                  : StreamAlsaMonoPipe::flush());
+    RETURN_STATUS_IF_ERROR(isStubStreamOnWorker() ? mStubDriver.flush() : StreamAlsa::flush());
     // TODO(b/372951987): consider if this needs to be done from 'StreamInWorkerLogic::cycle'.
     return mIsInput ? standby() : ::android::OK;
 }
 
 ::android::status_t StreamPrimary::pause() {
-    return isStubStreamOnWorker() ? mStubDriver.pause() : StreamAlsaMonoPipe::pause();
+    return isStubStreamOnWorker() ? mStubDriver.pause() : StreamAlsa::pause();
 }
 
 ::android::status_t StreamPrimary::standby() {
-    return isStubStreamOnWorker() ? mStubDriver.standby() : StreamAlsaMonoPipe::standby();
+    return isStubStreamOnWorker() ? mStubDriver.standby() : StreamAlsa::standby();
 }
 
 ::android::status_t StreamPrimary::start() {
@@ -80,12 +79,12 @@ StreamPrimary::StreamPrimary(StreamContext* context, const Metadata& metadata)
         mCurrAlsaDeviceId = mAlsaDeviceId;
     }
     if (shutdownAlsaStream) {
-        StreamAlsaMonoPipe::shutdown();  // Close currently opened ALSA devices.
+        StreamAlsa::shutdown();  // Close currently opened ALSA devices.
     }
     if (isStub) {
         return mStubDriver.start();
     }
-    RETURN_STATUS_IF_ERROR(StreamAlsaMonoPipe::start());
+    RETURN_STATUS_IF_ERROR(StreamAlsa::start());
     mStartTimeNs = ::android::uptimeNanos();
     mFramesSinceStart = 0;
     mSkipNextTransfer = false;
@@ -101,7 +100,7 @@ StreamPrimary::StreamPrimary(StreamContext* context, const Metadata& metadata)
     // and is not being able to achieve real-time behavior similar to ADSPs (b/302587331).
     if (!mSkipNextTransfer) {
         RETURN_STATUS_IF_ERROR(
-                StreamAlsaMonoPipe::transfer(buffer, frameCount, actualFrameCount, latencyMs));
+                StreamAlsa::transfer(buffer, frameCount, actualFrameCount, latencyMs));
     } else {
         LOG(DEBUG) << __func__ << ": skipping transfer (" << frameCount << " frames)";
         *actualFrameCount = frameCount;
@@ -137,7 +136,7 @@ StreamPrimary::StreamPrimary(StreamContext* context, const Metadata& metadata)
 }
 
 void StreamPrimary::shutdown() {
-    StreamAlsaMonoPipe::shutdown();
+    StreamAlsa::shutdown();
     mStubDriver.shutdown();
 }
 
@@ -159,7 +158,7 @@ ndk::ScopedAStatus StreamPrimary::setConnectedDevices(const ConnectedDevices& de
             streamDataProcessor->setAudioDevice(devices[0]);
         }
     }
-    return StreamAlsaMonoPipe::setConnectedDevices(devices);
+    return StreamAlsa::setConnectedDevices(devices);
 }
 
 std::vector<alsa::DeviceProfile> StreamPrimary::getDeviceProfiles() {

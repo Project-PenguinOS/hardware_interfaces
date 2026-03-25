@@ -22,12 +22,12 @@
 #include <android-base/thread_annotations.h>
 
 #include "DriverStubImpl.h"
-#include "StreamAlsaMonoPipe.h"
+#include "StreamAlsa.h"
 #include "primary/PrimaryMixer.h"
 
 namespace aidl::android::hardware::audio::core {
 
-class StreamPrimary : public StreamAlsaMonoPipe {
+class StreamPrimary : public StreamAlsa {
   public:
     StreamPrimary(StreamContext* context, const Metadata& metadata);
 

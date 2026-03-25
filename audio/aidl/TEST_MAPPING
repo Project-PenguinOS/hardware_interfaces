@@ -1,13 +1,7 @@
 {
   "presubmit": [
     {
-      "name": "VtsHalAudioCoreTargetTest",
-      "options": [
-         {
-            // These tests are a minor variation, save time in presubmit.
-            "exclude-filter": "*SetupSeq2*"
-         }
-       ]
+      "name": "VtsHalAudioCoreTargetTest"
     },
     {
       "name": "audioeffect_tests"
