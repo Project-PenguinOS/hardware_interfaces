@@ -888,10 +888,13 @@ void ContextHub::HubInterface::createEchoDataFlow(
         return;
     }
 
+    RemoteEndpointId offloadEndpointId = {
+            .aidlId{.hubId = in_sinkId.hubId, .endpointId = in_sinkId.id}};
     pw::Result<std::variant<UntypedConsumer, VariableDataConsumer>> consumerRes =
             createRemoteConsumer(echoRegion, echoMetadataRegion, dataFlow.info.metadataOffsetBytes,
                                  sinkMetadataOffset,
-                                 RemoteNotifyArgs{[](const RemoteEndpointId&) {}});
+                                 RemoteNotifyArgs{.fn = [](const RemoteEndpointId&) {},
+                                                  .id = offloadEndpointId});
     if (!consumerRes.ok()) {
         ALOGE("Echo: createRemoteConsumer failed, status: %s", consumerRes.status().str());
         return;
@@ -942,7 +945,6 @@ void ContextHub::HubInterface::createEchoDataFlow(
     AllocatorRegion& hostRegion = hostProdRegionRes.value();
 
     // Create Producer
-    DataNotifier dataNotifier;
     constexpr size_t kQueueBlockCapacity = 1024;
     constexpr size_t kMaxBlockCount = 16;
     constexpr size_t kMinBlockCount = 1;
@@ -952,7 +954,8 @@ void ContextHub::HubInterface::createEchoDataFlow(
                 hostRegion, kQueueBlockCapacity,
                 std::get<UntypedConsumer>(*consumerOpt).getElementSize(),
                 std::get<UntypedConsumer>(*consumerOpt).getElementAlignment(), kMaxBlockCount,
-                kMinBlockCount, dataNotifier, RemoteNotifyArgs{[](const RemoteEndpointId&) {}},
+                kMinBlockCount, mDataNotifier,
+                RemoteNotifyArgs{.fn = [](const RemoteEndpointId&) {}, .id = offloadEndpointId},
                 /*memAccess=*/nullptr);
         if (!producerRes.ok()) {
             ALOGE("Echo: UntypedProducer::createRemote failed, status: %s",
@@ -962,8 +965,9 @@ void ContextHub::HubInterface::createEchoDataFlow(
         producerOpt.emplace(std::move(producerRes.value()));
     } else {
         pw::Result<VariableDataProducer> producerRes = VariableDataProducer::createRemote(
-                hostRegion, kQueueBlockCapacity, kMaxBlockCount, kMinBlockCount, dataNotifier,
-                RemoteNotifyArgs{[](const RemoteEndpointId&) {}}, /* memAccess= */ nullptr);
+                hostRegion, kQueueBlockCapacity, kMaxBlockCount, kMinBlockCount, mDataNotifier,
+                RemoteNotifyArgs{.fn = [](const RemoteEndpointId&) {}, .id = offloadEndpointId},
+                /* memAccess= */ nullptr);
         if (!producerRes.ok()) {
             ALOGE("Echo: VariableDataProducer::createRemote failed, status: %s",
                   producerRes.status().str());
