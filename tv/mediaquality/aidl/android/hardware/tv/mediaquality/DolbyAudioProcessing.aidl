@@ -17,6 +17,7 @@
 package android.hardware.tv.mediaquality;
 
 @VintfStability
+@RustDerive(Clone=true, Eq=true, PartialEq=true)
 parcelable DolbyAudioProcessing {
     /* The default value for sound mode is standard. */
     enum SoundMode {
