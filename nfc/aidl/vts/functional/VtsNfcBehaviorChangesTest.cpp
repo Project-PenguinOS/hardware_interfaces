@@ -531,6 +531,13 @@ TEST_P(NfcBehaviorChanges, setTechAPollingLoopAnnotation_getCaps) {
         GTEST_SKIP() << "Skipping test for board API level < 202604";
     }
 
+    // Check if the device supports reader mode via the android.hardware.nfc feature flag.
+    int chkReaderMode =
+            std::system("pm list features | grep -q -x \"feature:android.hardware.nfc\"");
+    if (chkReaderMode == -1 || WEXITSTATUS(chkReaderMode) != 0) {
+        GTEST_SKIP() << "Skipping test for device without the reader mode feature";
+    }
+
     tNFC_STATUS status = nfaGetCaps();
 
     ASSERT_EQ(status, NFC_STATUS_OK);
@@ -545,6 +552,13 @@ TEST_P(NfcBehaviorChanges, setTechAPollingLoopAnnotation_getCaps) {
 TEST_P(NfcBehaviorChanges, SetTechAPollingLoopAnnotation_test) {
     if (get_vsr_api_level() < 202604) {
         GTEST_SKIP() << "Skipping test for board API level < 202604";
+    }
+
+    // Check if the device supports reader mode via the android.hardware.nfc feature flag.
+    int chkReaderMode =
+            std::system("pm list features | grep -q -x \"feature:android.hardware.nfc\"");
+    if (chkReaderMode == -1 || WEXITSTATUS(chkReaderMode) != 0) {
+        GTEST_SKIP() << "Skipping test for device without the reader mode feature";
     }
 
     uint8_t annotation[] = {0x6a, 0x01, 0xcf, 0x00, 0x00};

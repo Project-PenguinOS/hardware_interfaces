@@ -22,7 +22,6 @@
 #include <BluetoothAudioCodecs.h>
 #include <BluetoothAudioSessionReport.h>
 #include <android-base/logging.h>
-#include <com_android_btaudio_hal_flags.h>
 
 #include "LeAudioOffloadAudioProvider.h"
 
@@ -531,12 +530,6 @@ void LeAudioOffloadAudioProvider::filterRequirementAseDirectionConfigurationExac
             return;
         }
         auto cfg = direction_configuration.value();
-        if (!com::android::btaudio::hal::flags::leaudio_sw_offload() &&
-            isOpusHiResCodec(cfg.aseConfiguration)) {
-            LOG(DEBUG) << ": Ignore opus high res codec";
-            valid_direction_configurations = std::nullopt;
-            return;
-        }
         if (!filterMatchedAseConfiguration(cfg.aseConfiguration,
                                            requirement.value().aseConfiguration)) {
             valid_direction_configurations = std::nullopt;
@@ -661,6 +654,7 @@ LeAudioOffloadAudioProvider::getCapabilitiesMatchedAseConfigurationSettings(
             .sourceAseConfiguration = setting.sourceAseConfiguration,
             .flags = setting.flags,
             .packing = setting.packing,
+            .latencySetting = setting.latencySetting,
     };
 
     // Get a list of all matched AseDirectionConfiguration
@@ -706,6 +700,7 @@ LeAudioOffloadAudioProvider::getRequirementMatchedAseConfigurationSettings(
             .audioContext = requirement.audioContext,
             .packing = setting.packing,
             .flags = setting.flags,
+            .latencySetting = setting.latencySetting,
     };
 
     // The number of AseDirectionRequirement in the requirement
