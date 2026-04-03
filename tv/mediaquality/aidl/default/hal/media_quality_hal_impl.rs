@@ -36,6 +36,10 @@ use android_hardware_tv_mediaquality::aidl::android::hardware::tv::mediaquality:
     VendorParameterIdentifier::VendorParameterIdentifier,
     EqualizerCapabilities::EqualizerCapabilities,
     EqualizerDetail::EqualizerDetail,
+    DolbyAudioProcessingCapabilities::DolbyAudioProcessingCapabilities,
+    DolbyAudioProcessing::DolbyAudioProcessing,
+    DtsVirtualXCapabilities::DtsVirtualXCapabilities,
+    DtsVirtualX::DtsVirtualX,
 };
 use binder::{Interface, Strong};
 use binder::ExceptionCode;
@@ -63,6 +67,10 @@ pub struct MediaQualityService {
     equalizer_capabilities: Arc<Mutex<EqualizerCapabilities>>,
     equalizer_settings: Arc<Mutex<EqualizerDetail>>,
     oled_panel_supported: Arc<Mutex<bool>>,
+    dolby_capabilities: Arc<Mutex<DolbyAudioProcessingCapabilities>>,
+    dolby_settings: Arc<Mutex<DolbyAudioProcessing>>,
+    dts_capabilities: Arc<Mutex<DtsVirtualXCapabilities>>,
+    dts_settings: Arc<Mutex<DtsVirtualX>>,
 }
 
 impl MediaQualityService {
@@ -100,6 +108,36 @@ impl MediaQualityService {
                 bands: vec![],
             })),
             oled_panel_supported: Arc::new(Mutex::new(true)),
+            dolby_capabilities: Arc::new(Mutex::new(DolbyAudioProcessingCapabilities {
+                supportedSoundModes: vec![Default::default()],
+                isVolumeLevelerSupported: true,
+                isSurroundVirtualizerSupported: true,
+                isDolbyAtmosSupported: true,
+            })),
+            dolby_settings: Arc::new(Mutex::new(DolbyAudioProcessing {
+                soundMode: Default::default(),
+                volumeLeveler: false,
+                surroundVirtualizer: false,
+                dolbyAtmos: false,
+            })),
+            dts_capabilities: Arc::new(Mutex::new(DtsVirtualXCapabilities {
+                isTbHdxSupported: true,
+                isLimiterSupported: true,
+                isTruSurroundXSupported: true,
+                isTruVolumeHdSupported: true,
+                isDialogClaritySupported: true,
+                isDefinitionSupported: true,
+                isHeightSupported: true,
+            })),
+            dts_settings: Arc::new(Mutex::new(DtsVirtualX {
+                tbHdx: false,
+                limiter: false,
+                truSurroundX: false,
+                truVolumeHd: false,
+                dialogClarity: false,
+                definition: false,
+                height: false,
+            })),
         }
     }
 }
@@ -397,6 +435,65 @@ impl IMediaQuality for MediaQualityService {
                 Ok(false)
             }
         }
+    }
+
+    fn getDolbyAudioProcessingCapabilities(&self) -> binder::Result<DolbyAudioProcessingCapabilities> {
+        println!("HAL: getDolbyAudioProcessingCapabilities called");
+        let caps = self.dolby_capabilities.lock().unwrap();
+        Ok((*caps).clone())
+    }
+
+    fn getDolbyAudioProcessingSettings(&self) -> binder::Result<DolbyAudioProcessing> {
+        println!("HAL: getDolbyAudioProcessingSettings called");
+        let settings = self.dolby_settings.lock().unwrap();
+        Ok((*settings).clone())
+    }
+
+    fn setDolbyAudioProcessingSettings(&self, settings: &DolbyAudioProcessing) -> binder::Result<()> {
+        println!("HAL: setDolbyAudioProcessingSettings called");
+        let caps = self.dolby_capabilities.lock().unwrap();
+        if (settings.volumeLeveler && !caps.isVolumeLevelerSupported) ||
+               (settings.surroundVirtualizer && !caps.isSurroundVirtualizerSupported) ||
+               (settings.dolbyAtmos && !caps.isDolbyAtmosSupported) ||
+               (!caps.supportedSoundModes.contains(&settings.soundMode)) {
+               log::error!("Invalid Dolby settings: requested features not supported by hardware capabilities.");
+               return Err(ExceptionCode::UNSUPPORTED_OPERATION.into());
+            }
+        let mut current_settings = self.dolby_settings.lock().unwrap();
+        *current_settings = settings.clone();
+        // TODO: Add code to apply these settings to the audio hardware/engine
+        Ok(())
+    }
+
+    fn getDtsVirtualXCapabilities(&self) -> binder::Result<DtsVirtualXCapabilities> {
+        println!("HAL: getDtsVirtualXCapabilities called");
+        let caps = self.dts_capabilities.lock().unwrap();
+        Ok((*caps).clone())
+    }
+
+    fn getDtsVirtualXSettings(&self) -> binder::Result<DtsVirtualX> {
+        println!("HAL: getDtsVirtualXSettings called");
+        let settings = self.dts_settings.lock().unwrap();
+        Ok((*settings).clone())
+    }
+
+    fn setDtsVirtualXSettings(&self, settings: &DtsVirtualX) -> binder::Result<()> {
+        println!("HAL: setDtsVirtualXSettings called");
+        let caps = self.dts_capabilities.lock().unwrap();
+        if (settings.tbHdx && !caps.isTbHdxSupported) ||
+           (settings.limiter && !caps.isLimiterSupported) ||
+           (settings.truSurroundX && !caps.isTruSurroundXSupported) ||
+           (settings.truVolumeHd && !caps.isTruVolumeHdSupported) ||
+           (settings.dialogClarity && !caps.isDialogClaritySupported) ||
+           (settings.definition && !caps.isDefinitionSupported) ||
+           (settings.height && !caps.isHeightSupported) {
+            log::error!("Invalid DTS settings: requested features not supported by hardware capabilities.");
+            return Err(ExceptionCode::UNSUPPORTED_OPERATION.into());
+        }
+        let mut current_settings = self.dts_settings.lock().unwrap();
+        *current_settings = settings.clone();
+        // TODO: Add code to apply these settings to the audio hardware/engine
+        Ok(())
     }
 }
 

@@ -4228,7 +4228,12 @@
                             }
                         }
                     ],
-                    "ase_channel_cnt": 1
+                    "ase_channel_cnt": 1,
+                    "max_sdu_for_abr": [
+                        155,
+                        120,
+                        100
+                    ]
                 }
             ]
         },
