@@ -17,7 +17,6 @@
 package android.hardware.tv.mediaquality;
 
 @VintfStability
-@RustDerive(Clone=true, Eq=true, PartialEq=true)
 parcelable DtsVirtualX {
     /*
      * Total Bass Harmonic Distortion (X).

@@ -17,10 +17,6 @@
 package android.hardware.tv.mediaquality;
 
 import android.hardware.tv.mediaquality.AmbientBacklightSettings;
-import android.hardware.tv.mediaquality.DolbyAudioProcessing;
-import android.hardware.tv.mediaquality.DolbyAudioProcessingCapabilities;
-import android.hardware.tv.mediaquality.DtsVirtualX;
-import android.hardware.tv.mediaquality.DtsVirtualXCapabilities;
 import android.hardware.tv.mediaquality.EqualizerCapabilities;
 import android.hardware.tv.mediaquality.EqualizerDetail;
 import android.hardware.tv.mediaquality.IMediaQualityCallback;
@@ -292,45 +288,4 @@ interface IMediaQuality {
      * @param defaultSoundProfileId The ID for the default sound profile.
      */
     void sendDefaultSoundProfile(in SoundProfile soundProfile);
-
-    /**
-     * Gets the Dolby Audio Processing capabilities of this device.
-     * The framework should call this once when it start.
-     */
-    DolbyAudioProcessingCapabilities getDolbyAudioProcessingCapabilities();
-
-    /**
-     * Gets the current Dolby Audio Processing settings.
-     */
-    DolbyAudioProcessing getDolbyAudioProcessingSettings();
-
-    /**
-     * Sets the desired Dolby Audio Processing settings.
-     * The framework must ensure the settings provided in the `settings` object
-     * match the capabilities reported by `getDolbyAudioProcessingCapabilities`.
-     * @throws EX_UNSUPPORTED_OPERATION if the provided settings are not supported
-     *         by the device's capabilities.
-     */
-    void setDolbyAudioProcessingSettings(in DolbyAudioProcessing settings);
-
-    /**
-     * Gets the DTS Virtual:X capabilities of this device.
-     * The framework should call this once when it start.
-     */
-    DtsVirtualXCapabilities getDtsVirtualXCapabilities();
-
-    /**
-     * Gets the current DTS Virtual:X settings.
-     */
-    DtsVirtualX getDtsVirtualXSettings();
-
-    /**
-     * Sets the desired DTS Virtual:X settings.
-     * The framework must ensure the settings provided in the `settings` object
-     * match the capabilities reported by `getDtsVirtualXCapabilities`.
-     *
-     * @throws EX_UNSUPPORTED_OPERATION if the provided settings are not supported
-     *              by the device's capabilities.
-     */
-    void setDtsVirtualXSettings(in DtsVirtualX settings);
 }

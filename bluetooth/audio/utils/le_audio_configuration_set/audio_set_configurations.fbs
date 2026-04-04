@@ -78,7 +78,6 @@ table AudioSetSubConfiguration {
     direction: AudioSetConfigurationDirection = SINK;
     codec_id : CodecId (required);
     codec_configuration: [CodecSpecificConfiguration] (required);
-    max_sdu_for_abr: [ushort];
 }
 table CodecConfiguration {
     name: string (key, required);

@@ -32,7 +32,7 @@
 // later when a module using the interface is updated, e.g., Mainline modules.
 
 package android.hardware.tv.mediaquality;
-@RustDerive(Clone=true, Eq=true, PartialEq=true) @VintfStability
+@VintfStability
 parcelable DolbyAudioProcessing {
   android.hardware.tv.mediaquality.DolbyAudioProcessing.SoundMode soundMode;
   boolean volumeLeveler;

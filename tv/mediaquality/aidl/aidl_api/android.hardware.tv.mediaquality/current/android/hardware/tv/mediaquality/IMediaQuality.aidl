@@ -63,10 +63,4 @@ interface IMediaQuality {
   boolean isDisplayTechnologySupported(in android.hardware.tv.mediaquality.PanelTechnologyType panelTechnology);
   void sendDefaultPictureProfile(in android.hardware.tv.mediaquality.PictureProfile pictureProfile);
   void sendDefaultSoundProfile(in android.hardware.tv.mediaquality.SoundProfile soundProfile);
-  android.hardware.tv.mediaquality.DolbyAudioProcessingCapabilities getDolbyAudioProcessingCapabilities();
-  android.hardware.tv.mediaquality.DolbyAudioProcessing getDolbyAudioProcessingSettings();
-  void setDolbyAudioProcessingSettings(in android.hardware.tv.mediaquality.DolbyAudioProcessing settings);
-  android.hardware.tv.mediaquality.DtsVirtualXCapabilities getDtsVirtualXCapabilities();
-  android.hardware.tv.mediaquality.DtsVirtualX getDtsVirtualXSettings();
-  void setDtsVirtualXSettings(in android.hardware.tv.mediaquality.DtsVirtualX settings);
 }

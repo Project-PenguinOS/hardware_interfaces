@@ -1186,10 +1186,10 @@ class StreamCommonLogic : public StreamLogic {
           mMmapBurstSleep(mIsMmapped ? static_cast<double>(context.getMmapBurstSizeFrames()) /
                                                context.getSampleRate()
                                      : 0.0),
-          mIsOffload(context.getFlags().getTag() == AudioIoFlags::output &&
-                     isBitPositionFlagSet(context.getFlags().get<AudioIoFlags::output>(),
-                                          AudioOutputFlags::COMPRESS_OFFLOAD)),
-          mIsEncoded(context.getConfig().format.type == AudioFormatType::NON_PCM),
+          mIsCompressOffload(context.getFlags().getTag() == AudioIoFlags::output &&
+                             isBitPositionFlagSet(context.getFlags().get<AudioIoFlags::output>(),
+                                                  AudioOutputFlags::COMPRESS_OFFLOAD) &&
+                             context.getConfig().format.type == AudioFormatType::NON_PCM),
           mConfig(context.getConfig()) {}
     StreamContext::CommandMQ* getCommandMQ() const { return mCommandMQ; }
     const AudioConfigBase& getConfig() const { return mConfig; }
@@ -1198,14 +1198,13 @@ class StreamCommonLogic : public StreamLogic {
     StreamLogicDriver* getDriver() const { return mDriver; }
     StreamEventReceiver* getEventReceiver() const { return mEventReceiver; }
     int getSampleRate() const { return mConfig.sampleRate; }
-    bool isOffload() const { return mIsOffload; }
-    bool isEncoded() const { return mIsEncoded; }
+    bool isCompressOffload() const { return mIsCompressOffload; }
     bool isMmapped() const { return mIsMmapped; }
 
     std::string init() override {
         LOG(DEBUG) << __func__ << ": isMmapped? " << mIsMmapped << ", MmapBurstSleep "
-                   << mMmapBurstSleep << ", isOffload? " << mIsOffload << ", isEncoded? "
-                   << mIsEncoded << ", " << mConfig.toString();
+                   << mMmapBurstSleep << ", isCompressOffload? " << mIsCompressOffload << ", "
+                   << mConfig.toString();
         return "";
     }
     const std::vector<int64_t>& getBurstOccurrences() const { return mBurstOccurrences; }
@@ -1294,8 +1293,7 @@ class StreamCommonLogic : public StreamLogic {
     int mLastEventSeq = StreamEventReceiver::kEventSeqInit;
     const bool mIsMmapped;
     const std::chrono::duration<double> mMmapBurstSleep;
-    const bool mIsOffload;
-    const bool mIsEncoded;
+    const bool mIsCompressOffload;
     const AudioConfigBase mConfig;
     std::string mFilePath;
 };
@@ -1415,7 +1413,7 @@ class StreamWriterLogic : public StreamCommonLogic {
   protected:
     std::string init() override {
         if (auto status = StreamCommonLogic::init(); !status.empty()) return status;
-        if (isEncoded()) {
+        if (isCompressOffload()) {
             auto filePath = getMediaFilePath();
             if (!filePath.empty()) {
                 mCompressedMedia.open(filePath, std::ios::in | std::ios::binary);
@@ -1446,7 +1444,7 @@ class StreamWriterLogic : public StreamCommonLogic {
         }
         if (actualSize > 0) {
             // It's the 'burst' command.
-            if (!isEncoded()) {
+            if (!isCompressOffload()) {
                 fillData(mBurstIteration);
                 if (mBurstIteration < std::numeric_limits<int8_t>::max()) {
                     mBurstIteration++;
@@ -1526,7 +1524,7 @@ class StreamWriterLogic : public StreamCommonLogic {
             LOG(ERROR) << __func__ << ": received invalid stream state: " << toString(reply.state);
             return Status::ABORT;
         }
-        if (isEncoded()) {
+        if (isCompressOffload()) {
             if (actualSize > 0) {  // 'burst' command.
                 if (const int32_t requested = command.get<StreamDescriptor::Command::Tag::burst>();
                     reply.fmqByteCount < requested) {
@@ -4093,8 +4091,6 @@ static bool skipStreamIoTestForMixPortConfig(const AudioPortConfig& portConfig,
            (portConfig.flags.value().getTag() == AudioIoFlags::output &&
             (isAnyBitPositionFlagSet(portConfig.flags.value().template get<AudioIoFlags::output>(),
                                      {AudioOutputFlags::VOIP_RX, AudioOutputFlags::INCALL_MUSIC}) ||
-             (portConfig.format.value().type == AudioFormatType::NON_PCM &&
-              getMediaFileInfoForConfig(portConfig).empty()) ||
              (isBitPositionFlagSet(portConfig.flags.value().template get<AudioIoFlags::output>(),
                                    AudioOutputFlags::COMPRESS_OFFLOAD) &&
               portConfig.format.value().type == AudioFormatType::NON_PCM &&
@@ -5800,7 +5796,7 @@ class AudioStreamIo : public AudioCoreModuleBase,
     }
 
     void Run() {
-        using ProfileId = std::tuple<int32_t, std::string, AudioIoFlags, AudioConfigBase>;
+        using ProfileId = std::tuple<int32_t, std::string, AudioIoFlags, AudioFormatDescription>;
         auto profileIdToString = [](const ProfileId& p) -> std::string {
             return std::string("profile of mix port ")
                     .append(std::to_string(std::get<0>(p)))
@@ -5856,7 +5852,8 @@ class AudioStreamIo : public AudioCoreModuleBase,
                                       portConfig.flags.value()
                                               .template get<AudioIoFlags::Tag::output>(),
                                       AudioOutputFlags::COMPRESS_OFFLOAD);
-            const bool isEncoded = portConfig.format.value().type == AudioFormatType::NON_PCM;
+            const bool isCompressOffload =
+                    isOffload && portConfig.format.value().type == AudioFormatType::NON_PCM;
             const bool isMmap = hasMmapFlag(portConfig.flags.value());
             if (auto streamType =
                         std::get<NAMED_CMD_STREAM_TYPE>(std::get<PARAM_CMD_SEQ>(GetParam()));
@@ -5869,10 +5866,10 @@ class AudioStreamIo : public AudioCoreModuleBase,
             }
             const auto configBase = AudioConfigBase{portConfig.sampleRate->value,
                                                     *portConfig.channelMask, *portConfig.format};
-            auto mediaFiles = getMediaFileInfoForConfig(configBase);
+            auto filesToTest = getMediaFileInfoForConfig(configBase);
             if (skipStreamIoTestForMixPortConfig(portConfig, aidlVersion) ||
-                (isEncoded && mediaFiles.empty())) {
-                skipped.emplace(port->id, port->name, port->flags, configBase);
+                (isCompressOffload && filesToTest.empty())) {
+                skipped.emplace(port->id, port->name, port->flags, portConfig.format.value());
                 continue;
             }
 
@@ -5881,8 +5878,8 @@ class AudioStreamIo : public AudioCoreModuleBase,
                     std::get<NAMED_CMD_DELAY_MS>(std::get<PARAM_CMD_SEQ>(GetParam()));
             ASSERT_NO_FATAL_FAILURE(delayTransientStates.SetUp(module.get()));
 
-            if (isEncoded) {
-                for (const auto& fileInfo : mediaFiles) {
+            if (isCompressOffload) {
+                for (const auto& fileInfo : filesToTest) {
                     SCOPED_TRACE(fileInfo.path);
                     ASSERT_NO_FATAL_FAILURE(runStreamIoCommands(portConfig, &fileInfo));
                 }
@@ -5897,8 +5894,8 @@ class AudioStreamIo : public AudioCoreModuleBase,
                 WithModuleParameter forceTransientBurst("aosp.forceTransientBurst", Boolean{true});
                 if (forceTransientBurst.SetUpNoChecks(module.get(), true /*failureExpected*/)
                             .isOk()) {
-                    if (isEncoded) {
-                        for (const auto& fileInfo : mediaFiles) {
+                    if (isCompressOffload) {
+                        for (const auto& fileInfo : filesToTest) {
                             SCOPED_TRACE(fileInfo.path);
                             ASSERT_NO_FATAL_FAILURE(runStreamIoCommands(portConfig, &fileInfo));
                         }

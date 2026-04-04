@@ -107,7 +107,8 @@ void BluetoothAudioSession::OnSessionEnded() {
     leaudio_connection_map_ = nullptr;
     stack_iface_ = nullptr;
     UpdateDataPath(nullptr);
-    if (::android::base::GetBoolProperty(kPropertyLeaSwOffload, false)) {
+    if (com::android::btaudio::hal::flags::leaudio_sw_offload() &&
+        ::android::base::GetBoolProperty(kPropertyLeaSwOffload, false)) {
         if (session_type_ == SessionType::LE_AUDIO_HARDWARE_OFFLOAD_ENCODING_DATAPATH) {
             LeAudioSwOffloadInstance::releaseSwOffload();
         }
@@ -194,7 +195,8 @@ OpusConfiguration getOpusConfigFromCodecConfig(
 }
 
 bool isA2dpSwOffloadAvailable() {
-    return ::android::base::GetBoolProperty(kEnableA2dpCodecExtensibility, false) &&
+    return com::android::btaudio::hal::flags::leaudio_sw_offload() &&
+           ::android::base::GetBoolProperty(kEnableA2dpCodecExtensibility, false) &&
            ::android::base::GetBoolProperty(kPropertyLeaSwOffload, false);
 }
 
@@ -223,7 +225,8 @@ std::optional<AudioConfiguration> convertToOpusAudioConfiguration(
                         LOG(DEBUG)
                                 << __func__
                                 << ": converted and set to OPUS config: " << opus_config.toString();
-                        if (::android::base::GetBoolProperty(kPropertyLeaSwOffload, false) &&
+                        if (com::android::btaudio::hal::flags::leaudio_sw_offload() &&
+                            ::android::base::GetBoolProperty(kPropertyLeaSwOffload, false) &&
                             opus_config.samplingFrequencyHz == kOpusHiresSamplingFrequency) {
                             LOG(INFO) << __func__
                                       << ": Detect premium audio, use software offload path.";
@@ -531,7 +534,8 @@ bool BluetoothAudioSession::IsSessionReady(bool is_primary_hal) {
              session_type_ == SessionType::LE_AUDIO_PERIPHERAL_OFFLOAD_DECODING_DATAPATH ||
              (data_mq_ != nullptr && data_mq_->isValid()));
 
-    if (::android::base::GetBoolProperty(kPropertyLeaSwOffload, false)) {
+    if (com::android::btaudio::hal::flags::leaudio_sw_offload() &&
+        ::android::base::GetBoolProperty(kPropertyLeaSwOffload, false)) {
         if (session_type_ == SessionType::LE_AUDIO_HARDWARE_OFFLOAD_ENCODING_DATAPATH ||
             session_type_ == SessionType::LE_AUDIO_PERIPHERAL_OFFLOAD_ENCODING_DATAPATH) {
             if (!is_primary_hal) {
@@ -1135,7 +1139,8 @@ std::atomic<bool> LeAudioSwOffloadInstance::is_swoff_stream_running_ = false;
 std::atomic<bool> LeAudioSwOffloadInstance::is_using_swoffload_ = false;
 
 void LeAudioSwOffloadInstance::releaseSwOffload() {
-    if (::android::base::GetBoolProperty(kPropertyLeaSwOffload, false)) {
+    if (com::android::btaudio::hal::flags::leaudio_sw_offload() &&
+        ::android::base::GetBoolProperty(kPropertyLeaSwOffload, false)) {
         if (LeAudioSwOffloadInstance::sw_offload_streams_) {
             LeAudioSwOffloadInstance::is_using_swoffload_ = false;
             LeAudioSwOffloadInstance::is_swoff_stream_running_ = false;

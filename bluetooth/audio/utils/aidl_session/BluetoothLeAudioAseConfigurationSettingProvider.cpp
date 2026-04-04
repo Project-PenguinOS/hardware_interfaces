@@ -131,12 +131,6 @@ bool IsLowLatencyConfiguration(const AseDirectionConfiguration& cfg) {
     return cfg.aseConfiguration.targetLatency == LeAudioAseConfiguration::TargetLatency::LOWER;
 }
 
-bool IsAbrConfiguration(const AseDirectionConfiguration& cfg) {
-    return cfg.qosConfiguration.has_value() &&
-           cfg.qosConfiguration->maxSduForAbrCodec.has_value() &&
-           !cfg.qosConfiguration->maxSduForAbrCodec->empty();
-}
-
 // Comparing if 2 AseDirectionConfiguration is asymmetrical.
 bool IsAseConfigurationAsymmetrical(const AseDirectionConfiguration& cfg_a,
                                     const AseDirectionConfiguration& cfg_b) {
@@ -392,9 +386,8 @@ std::optional<LeAudioAseConfiguration> AudioSetConfigurationProviderJson::Popula
 
 std::optional<LeAudioAseQosConfiguration>
 AudioSetConfigurationProviderJson::PopulateAseQosConfiguration(
-        const le_audio::QosConfiguration* qos_cfg,
-        const flatbuffers::Vector<uint16_t>* flat_max_sdu_for_abr,
-        const LeAudioAseConfiguration& ase, uint8_t ase_channel_cnt) {
+        const le_audio::QosConfiguration* qos_cfg, const LeAudioAseConfiguration& ase,
+        uint8_t ase_channel_cnt) {
     if (qos_cfg == nullptr) {
         LOG(ERROR) << __func__ << ": qos_cfg is null";
         return std::nullopt;
@@ -449,16 +442,6 @@ AudioSetConfigurationProviderJson::PopulateAseQosConfiguration(
 
     qos.maxTransportLatencyMs = qos_cfg->max_transport_latency();
     qos.retransmissionNum = qos_cfg->retransmission_number();
-
-    if (com::android::btaudio::hal::flags::leaudio_iso_parameter_update() &&
-        flat_max_sdu_for_abr != nullptr && flat_max_sdu_for_abr->size() > 0) {
-        std::vector<int32_t> max_sdu_for_abr;
-        max_sdu_for_abr.reserve(flat_max_sdu_for_abr->size());
-        for (uint16_t val : *flat_max_sdu_for_abr) {
-            max_sdu_for_abr.push_back(static_cast<int32_t>(val));
-        }
-        qos.maxSduForAbrCodec = std::move(max_sdu_for_abr);
-    }
 
     return qos;
 }
@@ -563,9 +546,8 @@ std::optional<AseConfig> AudioSetConfigurationProviderJson::PopulateAseConfigsFr
         config.aseConfiguration = std::move(ase_cfg.value());
 
         // Translate into LeAudioAseQosConfiguration directly into config member
-        auto qos_cfg_aidl =
-                PopulateAseQosConfiguration(qos_cfg, subconfig->max_sdu_for_abr(),
-                                            config.aseConfiguration, subconfig->ase_channel_cnt());
+        auto qos_cfg_aidl = PopulateAseQosConfiguration(qos_cfg, config.aseConfiguration,
+                                                        subconfig->ase_channel_cnt());
         if (!qos_cfg_aidl.has_value()) {
             continue;
         }
@@ -709,12 +691,6 @@ void AudioSetConfigurationProviderJson::UpdateConfigurationFlags(AseConfig& resu
 
     if (result.latency_setting.has_value()) {
         result.flags.bitmask |= ConfigurationFlags::ISO_PARAMETER_UPDATE;
-    }
-
-    if (com::android::btaudio::hal::flags::leaudio_iso_parameter_update() &&
-        (any_match(result.sink, IsAbrConfiguration) ||
-         any_match(result.source, IsAbrConfiguration))) {
-        result.flags.bitmask |= ConfigurationFlags::ADAPTER_BIT_RATE;
     }
 }
 
